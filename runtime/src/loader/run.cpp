@@ -149,7 +149,7 @@ int nier_run(const RunConfig& cfg) {
         host.game_delete = [](void* p) { if (p) g_fallback_free(p); };
     }
     printf("new/delete: %s
-", game_fn<void*>(g_main, "_Znwm") ? "main's" : nnsdk_symbol("_Znwm") ? "libnnsdk's" : "game malloc/free");
+",game_fn<void*>(g_main, "_Znwm") ? "main's" : nnsdk_symbol("_Znwm") ? "libnnsdk's" : "game malloc/free");
     host.thread_start = game_thread_start;
     host.tls_template = tls::set_template;
     host.make_stub = make_named_stub;
