@@ -198,6 +198,22 @@ template <typename T>
 constexpr size_t kCommandIndex = VariantIndex<T, Command>::value;
 static_assert(kCommandIndex<cmd::SetRenderTargets> == 0 && kCommandIndex<cmd::PatchSize> == std::variant_size_v<Command> - 1);
 
+// How many array layers a render-target view covers, the way view() builds it (without the one-layer limit attachments
+// get there): a 2D/1D/rectangle view is one layer, a cube six, an array view the layers from its base to its end (or the
+// count it names). NVN clears every layer of the view it is bound to, and God Eater 3 clears all three of its shadow
+// cascades with one clear through a view of the whole array before drawing into each layer with views of one.
+static uint32_t view_layer_count(const Texture& t, const TextureViewDesc& v) {
+    const int target = (v.flags & kViewTarget) ? v.target : t.desc.target;
+    if (target == kTarget1D || target == kTarget2D || target == kTarget2DMultisample || target == kTargetRectangle ||
+        target == kTarget3D)
+        return 1;
+    if (target == kTargetCube) return std::min<uint32_t>(6, std::max<uint32_t>(t.layers, 1));
+    const uint32_t base = (v.flags & kViewLayers) ? static_cast<uint32_t>(std::max<int>(v.base_layer, 0)) : 0u;
+    if (base >= t.layers) return 1;
+    uint32_t count = (v.flags & kViewLayers) && v.layers > 0 ? static_cast<uint32_t>(v.layers) : t.layers - base;
+    return std::max<uint32_t>(1, std::min<uint32_t>(count, t.layers - base));
+}
+
 // Mismos targets con las mismas vistas (lo que hay más allá de count no cuenta).
 bool same_targets(const cmd::SetRenderTargets& a, const cmd::SetRenderTargets& b) {
     if (a.count != b.count || a.depth != b.depth) return false;
@@ -5641,22 +5657,6 @@ VkExtent2D Executor::target_extent() const {
     for (int k = 0; k < st_.rt.count; k++) add(st_.rt.colors[k], st_.rt.color_views[k]);
     add(st_.rt.depth, st_.rt.depth_view);
     return {width, height};
-}
-
-// How many array layers a render-target view covers, the way view() builds it (without the one-layer limit attachments
-// get there): a 2D/1D/rectangle view is one layer, a cube six, an array view the layers from its base to its end (or the
-// count it names). NVN clears every layer of the view it is bound to, and God Eater 3 clears all three of its shadow
-// cascades with one clear through a view of the whole array before drawing into each layer with views of one.
-static uint32_t view_layer_count(const Texture& t, const TextureViewDesc& v) {
-    const int target = (v.flags & kViewTarget) ? v.target : t.desc.target;
-    if (target == kTarget1D || target == kTarget2D || target == kTarget2DMultisample || target == kTargetRectangle ||
-        target == kTarget3D)
-        return 1;
-    if (target == kTargetCube) return std::min<uint32_t>(6, std::max<uint32_t>(t.layers, 1));
-    const uint32_t base = (v.flags & kViewLayers) ? static_cast<uint32_t>(std::max<int>(v.base_layer, 0)) : 0u;
-    if (base >= t.layers) return 1;
-    uint32_t count = (v.flags & kViewLayers) && v.layers > 0 ? static_cast<uint32_t>(v.layers) : t.layers - base;
-    return std::max<uint32_t>(1, std::min<uint32_t>(count, t.layers - base));
 }
 
 // Un borrado de todo el adjunto antes de que empiece el pase de estos targets: se apunta para el siguiente pase que lo
