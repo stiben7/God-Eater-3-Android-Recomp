@@ -128,6 +128,17 @@ int nier_run(const RunConfig& cfg) {
     if (!relocate(g_main, resolve, err) || !probe::install(g_main, err) || !tls::patch(g_main, err) ||
         !protect(g_main, err))
         die(err);
+    if (have_sdk) {
+        // main's imports of library code that only the sdk module has now point into it, so it has to be a working module:
+        // its own imports go to main (malloc & co. are main's) or to the runtime, its TLS reads are redirected like main's.
+        auto sdk_resolve = [&](const ElfSym& s) -> uint64_t {
+            if (const ElfSym* m = g_main.find_export(s.name))
+                if (m->value) return static_cast<uint64_t>(g_main.addr(m->value));
+            return resolve_import(s, nullptr);
+        };
+        register_module(&g_sdk);
+        if (!relocate(g_sdk, sdk_resolve, err) || !tls::patch(g_sdk, err) || !protect(g_sdk, err)) die(err);
+    }
     report_imports(cfg.list_stubs);
 
     NnsdkHost host{};

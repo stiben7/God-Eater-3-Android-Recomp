@@ -43,7 +43,7 @@ std::unordered_map<std::string, void*> g_host;
 void* g_nnsdk = nullptr;
 void* g_nnsdk_base = nullptr;
 struct {
-    int nnsdk, host, sdk_data, zero_data, weak, stub;
+    int nnsdk, host, sdk_data, zero_data, weak, stub, sdk_code;
 } g_counts{};
 
 uint64_t make_stub(const std::string& name, uint64_t ret) {
@@ -155,13 +155,23 @@ uint64_t resolve_import(const ElfSym& s, const Module* sdk) {
         }
         return reinterpret_cast<uint64_t>(mem);
     }
+    // Library code the runtime doesn't provide (God Eater 3: operator new/delete, libc++ strings, parts of libc and
+    // nn::util / nn::mem all live in the game's own sdk module): run it from there, as a stub would only crash the game.
+    if (sdk) {
+        const ElfSym* f = sdk->find_export(s.name);
+        if (f && f->value) {
+            g_counts.sdk_code++;
+            return static_cast<uint64_t>(sdk->addr(f->value));
+        }
+    }
     g_counts.stub++;
     return make_stub(s.name, 0);
 }
 
 void report_imports(bool list_stubs) {
-    printf("imports: %d libnnsdk, %d host, %d datos del sdk, %d datos a cero, %d weak a 0, %d stubs\n",
-           g_counts.nnsdk, g_counts.host, g_counts.sdk_data, g_counts.zero_data, g_counts.weak, g_counts.stub);
+    printf("imports: %d libnnsdk, %d host, %d datos del sdk, %d datos a cero, %d weak a 0, %d codigo del sdk, %d stubs\n",
+           g_counts.nnsdk, g_counts.host, g_counts.sdk_data, g_counts.zero_data, g_counts.weak, g_counts.sdk_code,
+           g_counts.stub);
     if (list_stubs)
         for (uint32_t k = 0; k < g_stub_count; k++) printf("  stub: %s\n", g_stubs[k].pretty.c_str());
 }
