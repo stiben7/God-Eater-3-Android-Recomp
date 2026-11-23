@@ -544,7 +544,10 @@ int GetAudioOutSampleFormat(const AudioOut*) { return 2; }  // SampleFormat_PcmI
 const char* GetAudioOutName(const AudioOut*) { return "MainAudioOut"; }
 size_t GetAudioOutBufferDataSize(const AudioOutBuffer* b) { return b->data_size; }
 // The master volume of the output device: Android's own volume keys stay in charge.
-void SetAudioDeviceOutputVolume(const AudioDeviceName*, float) {}
+void SetAudioDeviceOutputVolume(const AudioDeviceName* name, float volume) {
+    static int logged = 0;  // what level the game asks the device for (the Switch's own mixer would apply it)
+    if (logged++ < 20) printf("[audio] SetAudioDeviceOutputVolume(%s, %.3f)\n", name ? name->name : "?", volume);
+}
 
 void SetAudioOutBufferInfo(AudioOutBuffer* b, void* buffer, size_t buffer_size, size_t data_size) {
     b->next = nullptr;
