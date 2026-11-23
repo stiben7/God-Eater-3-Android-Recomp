@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdlib>
 #include <vector>
 #include <cstdio>
@@ -127,36 +128,48 @@ bool silencio(const void* datos, size_t bytes) {
 }
 
 // Interleaved PCM of `channels` channels to stereo. Switch channel orders: 5.1 is FL FR FC LFE BL BR (7.1 adds SL SR),
-// 4 is FL FR BL BR. The weights keep a surround mix from clipping where one stereo pair carries most of the sound.
-void downmix_to_stereo(const int16_t* in, size_t frames, int channels, int16_t* out) {
-    auto clamp = [](int v) { return static_cast<int16_t>(v > 32767 ? 32767 : v < -32768 ? -32768 : v); };
+// 4 is FL FR BL BR. Gains leave headroom (a surround mix has the front pair near full scale already, and adding the
+// centre and rears on top clipped), and what still goes over is rounded off by a soft knee instead of hard-clipped.
+// Returns how many samples the knee had to touch.
+int downmix_to_stereo(const int16_t* in, size_t frames, int channels, int16_t* out) {
+    constexpr float kKnee = 22000.0f, kMax = 32767.0f;
+    int touched = 0;
+    auto limit = [&](float v) -> int16_t {
+        const float a = std::fabs(v);
+        if (a > kKnee) {
+            touched++;
+            v = std::copysign(kKnee + (kMax - kKnee) * std::tanh((a - kKnee) / (kMax - kKnee)), v);
+        }
+        return static_cast<int16_t>(v);
+    };
     for (size_t f = 0; f < frames; f++) {
         const int16_t* s = in + f * channels;
-        int l, r;
+        float l, r;
         if (channels == 1) {
             l = r = s[0];
         } else if (channels >= 6) {
-            const int c = s[2] * 42 / 100, lfe = s[3] * 20 / 100;
-            l = s[0] * 70 / 100 + c + lfe + s[4] * 42 / 100;
-            r = s[1] * 70 / 100 + c + lfe + s[5] * 42 / 100;
-            if (channels >= 8) l += s[6] * 42 / 100, r += s[7] * 42 / 100;
+            const float c = s[2] * 0.5f, lfe = s[3] * 0.1f;
+            l = s[0] * 0.62f + c + lfe + s[4] * 0.35f;
+            r = s[1] * 0.62f + c + lfe + s[5] * 0.35f;
+            if (channels >= 8) l += s[6] * 0.35f, r += s[7] * 0.35f;
         } else if (channels == 4) {
-            l = s[0] + s[2] * 50 / 100;
-            r = s[1] + s[3] * 50 / 100;
+            l = s[0] * 0.75f + s[2] * 0.35f;
+            r = s[1] * 0.75f + s[3] * 0.35f;
         } else {
             l = s[0];
             r = s[1];
         }
-        out[f * 2] = clamp(l);
-        out[f * 2 + 1] = clamp(r);
+        out[f * 2] = limit(l);
+        out[f * 2 + 1] = limit(r);
     }
+    return touched;
 }
 
 // DEBUG: every 2 s of wall time, what the game has been appending (stereo, after the mix-down): buffers, frames and the
 // loudest sample. A flat 0 peak means the game is sending silence.
-void trace_levels(const int16_t* stereo, size_t frames, int channels) {
+void trace_levels(const int16_t* stereo, size_t frames, int channels, int limited) {
     static std::atomic<uint64_t> buffers{0}, total_frames{0};
-    static std::atomic<int> peak{0};
+    static std::atomic<int> peak{0}, limit_hits{0};
     static std::atomic<int64_t> next_ns{0};
     int p = 0;
     for (size_t i = 0; i < frames * 2; i++) p = std::max(p, std::abs(static_cast<int>(stereo[i])));
@@ -164,12 +177,13 @@ void trace_levels(const int16_t* stereo, size_t frames, int channels) {
     while (p > old && !peak.compare_exchange_weak(old, p)) {}
     buffers++;
     total_frames += frames;
+    limit_hits += limited;
     const int64_t now = ahora_ns();
     int64_t due = next_ns.load();
     if (now >= due && next_ns.compare_exchange_strong(due, now + 2'000'000'000LL)) {
-        printf("[audio] 2 s: %llu buffers de %d canales, %llu frames, pico %d de 32767\n",
+        printf("[audio] 2 s: %llu buffers de %d canales, %llu frames, pico %d de 32767, limitador %d veces\n",
                static_cast<unsigned long long>(buffers.exchange(0)), channels,
-               static_cast<unsigned long long>(total_frames.exchange(0)), peak.exchange(0));
+               static_cast<unsigned long long>(total_frames.exchange(0)), peak.exchange(0), limit_hits.exchange(0));
     }
 }
 
@@ -225,13 +239,14 @@ public:
         const size_t frames = b->data_size / (static_cast<size_t>(ch) * sizeof(int16_t));
         const bool cebado = !out->started && silencio(b->buffer, b->data_size), cont = continuidad();
         const int16_t* data = static_cast<const int16_t*>(b->buffer);
+        int limited = 0;
         static thread_local std::vector<int16_t> mix;
         if (ch != kStreamChannels) {
             mix.resize(frames * kStreamChannels);
-            downmix_to_stereo(data, frames, ch, mix.data());
+            limited = downmix_to_stereo(data, frames, ch, mix.data());
             data = mix.data();
         }
-        trace_levels(data, frames, ch);
+        trace_levels(data, frames, ch, limited);
         std::lock_guard lock(m_);
         cola_.encolar(out, b, data, frames, cebado, cont);
         liberar_locked();
