@@ -438,6 +438,29 @@ void nvnCommandBufferBindTexture(void* cmd, int stage, int index, uint64_t handl
     if (index >= 32 && logged++ < 20) NVN_LOG("BindTexture etapa %d índice %d\n", stage, index);
     record(cmd, cmd::BindTexture{stage, index, handle, true});
 }
+// Several combined texture+sampler handles at once (God Eater 3).
+void nvnCommandBufferBindTextures(void* cmd, int stage, int first, int count, const uint64_t* handles) {
+    for (int k = 0; k < count && handles; k++) record(cmd, cmd::BindTexture{stage, first + k, handles[k], true});
+}
+// Rasterizer discard only skips the fragment work of depth/stream-out-only passes: drawing them anyway is harmless.
+void nvnCommandBufferSetRasterizerDiscard(void*, int) {}
+// Command handles are pointers to recorded lists (EndRecording). Calling one replays its commands in the caller's
+// recording; they stay owned by the called list, which the game keeps alive until the caller has run (NVN requires it).
+void nvnCommandBufferCallCommands(void* cmd, int count, const uint64_t* handles) {
+    CommandList* dst = recording(cmd);
+    if (!dst) return;
+    for (int k = 0; k < count && handles; k++) {
+        const CommandList* src = reinterpret_cast<const CommandList*>(handles[k]);
+        if (!src) continue;
+        for (const Command& c : src->commands) {
+            if (dst->commands.size() == dst->commands.capacity()) [[unlikely]]
+                grow(*dst);
+            dst->commands.push_back(c);
+        }
+    }
+}
+// Nothing to release: a handle's list is owned by its command buffer.
+void nvnDeviceFinalizeCommandHandle(void*, uint64_t) {}
 void nvnCommandBufferBindSeparateSampler(void* cmd, int stage, int index, uint64_t handle) {
     record(cmd, cmd::BindSampler{stage, index, handle});
 }
@@ -645,6 +668,10 @@ NVN_PROC(nvnCommandBufferBindStorageBuffer);
 NVN_PROC(nvnCommandBufferBindStorageBuffers);
 NVN_PROC(nvnCommandBufferBindSeparateTexture);
 NVN_PROC(nvnCommandBufferBindTexture);
+NVN_PROC(nvnCommandBufferBindTextures);
+NVN_PROC(nvnCommandBufferSetRasterizerDiscard);
+NVN_PROC(nvnCommandBufferCallCommands);
+NVN_PROC(nvnDeviceFinalizeCommandHandle);
 NVN_PROC(nvnCommandBufferBindSeparateSampler);
 NVN_PROC(nvnCommandBufferBindImage);
 NVN_PROC(nvnCommandBufferBindImages);
