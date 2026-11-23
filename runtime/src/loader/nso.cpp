@@ -174,13 +174,14 @@ bool load_nso(const std::string& path, Module& mod, std::string& err) {
     return parse_dynamic(mod, err);
 }
 
-bool relocate(Module& mod, const ImportResolver& resolve, std::string& err) {
+bool relocate(Module& mod, const ImportResolver& resolve, std::string& err, const ImportResolver* prefer) {
     std::vector<uint64_t> cache(mod.symbols.size());
     std::vector<bool> done(mod.symbols.size());
     auto sym_addr = [&](uint32_t idx) {
         if (!done[idx]) {
             const ElfSym& s = mod.symbols[idx];
-            cache[idx] = s.shndx == SHN_ABS ? s.value : s.defined() ? mod.addr(s.value) : resolve(s);
+            const uint64_t over = s.defined() && s.shndx != SHN_ABS && prefer ? (*prefer)(s) : 0;
+            cache[idx] = s.shndx == SHN_ABS ? s.value : over ? over : s.defined() ? mod.addr(s.value) : resolve(s);
             done[idx] = true;
         }
         return cache[idx];

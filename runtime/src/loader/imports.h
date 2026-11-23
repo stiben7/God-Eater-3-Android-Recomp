@@ -13,6 +13,9 @@ bool init_imports(const std::string& nnsdk_path, std::string& err);
 // Dirección para un import de main. sdk (opcional) aporta los datos que el juego importa.
 uint64_t resolve_import(const ElfSym& sym, const Module* sdk);
 
+// The runtime's own implementation of a symbol (libnnsdk's, or a host function), or 0 if it has none.
+uint64_t runtime_override(const ElfSym& sym);
+
 // Stub con nombre creado en caliente (p. ej. funciones NVN pedidas por nombre); devuelve ret.
 void* make_named_stub(const char* name, uint64_t ret);
 

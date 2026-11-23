@@ -120,6 +120,25 @@ void* nnsdk_symbol(const char* name) {
     return p && dladdr(p, &info) && info.dli_fbase == g_nnsdk_base ? p : nullptr;
 }
 
+uint64_t runtime_override(const ElfSym& s) {
+    if (void* p = nnsdk_symbol(("nngame_" + s.name).c_str())) return reinterpret_cast<uint64_t>(p);
+    if (void* p = nnsdk_symbol(s.name.c_str())) return reinterpret_cast<uint64_t>(p);
+    if (auto it = g_host.find(s.name); it != g_host.end()) return reinterpret_cast<uint64_t>(it->second);
+    return 0;
+}
+
+// Which of the sdk module's functions are plain library code that can run as they are (see resolve_import).
+static bool sdk_code_allowed(const std::string& n) {
+    auto starts = [&](const char* p) { return n.rfind(p, 0) == 0; };
+    if (starts("_ZNSt3__1") || starts("_ZNKSt3__1") || starts("_ZSt") || starts("_ZNSt")) return true;  // libc++
+    if (n.size() > 3 && n[0] == '_' && n[1] == 'Z' && (n[2] == 'n' || n[2] == 'd')) return true;       // operator new/delete
+    if (starts("_ZN2nn4util") || starts("_ZNK2nn4util") || starts("_ZN2nn3mem") || starts("_ZNK2nn3mem")) return true;
+    if (starts("_Z")) return false;  // any other C++ (nn::os, nn::oe, nn::account, movie::…)
+    for (const char* p : {"pthread_", "sem_", "__nn", "nn", "usleep", "nanosleep", "sleep", "clock_", "sched_"})
+        if (starts(p)) return false;
+    return true;  // plain C
+}
+
 uint64_t resolve_import(const ElfSym& s, const Module* sdk) {
     // Las funciones de libc con comportamiento de la Switch (pthread_* sobre nn::os, open con rutas "rom:/",
     // clock_gettime solo con CLOCK_REALTIME…) se exportan como nngame_<nombre>: con su nombre de libc, las
@@ -155,9 +174,11 @@ uint64_t resolve_import(const ElfSym& s, const Module* sdk) {
         }
         return reinterpret_cast<uint64_t>(mem);
     }
-    // Library code the runtime doesn't provide (God Eater 3: operator new/delete, libc++ strings, parts of libc and
+    // Pure library code the runtime doesn't provide (God Eater 3: operator new/delete, libc++ strings, parts of libc and
     // nn::util / nn::mem all live in the game's own sdk module): run it from there, as a stub would only crash the game.
-    if (sdk) {
+    // Not the OS-level services (nn::os, nn::oe, nn::account, pthread_*…): their real code asserts here, and a stub that
+    // returns lets the game go on until the runtime implements them.
+    if (sdk && sdk_code_allowed(s.name)) {
         const ElfSym* f = sdk->find_export(s.name);
         if (f && f->value) {
             g_counts.sdk_code++;

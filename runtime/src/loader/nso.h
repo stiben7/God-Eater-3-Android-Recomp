@@ -50,7 +50,9 @@ bool load_nso(const std::string& path, Module& mod, std::string& err);
 
 // Aplica las relocaciones. resolve da la dirección de cada símbolo que el módulo importa.
 using ImportResolver = std::function<uint64_t(const ElfSym&)>;
-bool relocate(Module& mod, const ImportResolver& resolve, std::string& err);
+// prefer (optional): asked first for symbols the module defines itself; non-zero replaces its own copy (used for the sdk
+// module, whose OS-level code can't run here, so its internal calls go to the runtime's versions).
+bool relocate(Module& mod, const ImportResolver& resolve, std::string& err, const ImportResolver* prefer = nullptr);
 
 // Permisos finales: text R-X, rodata R--, data y bss RW-.
 bool protect(const Module& mod, std::string& err);

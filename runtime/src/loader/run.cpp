@@ -136,8 +136,11 @@ int nier_run(const RunConfig& cfg) {
                 if (m->value) return static_cast<uint64_t>(g_main.addr(m->value));
             return resolve_import(s, nullptr);
         };
+        // Where the sdk module defines something the runtime also implements (pthread_*, nn::os…), its own calls go to
+        // the runtime's version: the sdk's is written for Horizon's kernel.
+        const ImportResolver prefer = [](const ElfSym& s) { return runtime_override(s); };
         register_module(&g_sdk);
-        if (!relocate(g_sdk, sdk_resolve, err) || !tls::patch(g_sdk, err) || !protect(g_sdk, err)) die(err);
+        if (!relocate(g_sdk, sdk_resolve, err, &prefer) || !tls::patch(g_sdk, err) || !protect(g_sdk, err)) die(err);
     }
     report_imports(cfg.list_stubs);
 
