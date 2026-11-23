@@ -131,7 +131,9 @@ bool silencio(const void* datos, size_t bytes) {
 // 4 is FL FR BL BR. Gains leave headroom (a surround mix has the front pair near full scale already, and adding the
 // centre and rears on top clipped), and what still goes over is rounded off by a soft knee instead of hard-clipped.
 // Returns how many samples the knee had to touch.
-int downmix_to_stereo(const int16_t* in, size_t frames, int channels, int16_t* out) {
+// mode (debug switches audio_front_only / audio_center_only): 1 plays just the front pair, 2 just the centre channel,
+// to tell whether a distortion is in the game's own audio or comes from this mix.
+int downmix_to_stereo(const int16_t* in, size_t frames, int channels, int16_t* out, int mode) {
     constexpr float kKnee = 22000.0f, kMax = 32767.0f;
     int touched = 0;
     auto limit = [&](float v) -> int16_t {
@@ -147,6 +149,11 @@ int downmix_to_stereo(const int16_t* in, size_t frames, int channels, int16_t* o
         float l, r;
         if (channels == 1) {
             l = r = s[0];
+        } else if (channels >= 6 && mode == 1) {
+            l = s[0];
+            r = s[1];
+        } else if (channels >= 6 && mode == 2) {
+            l = r = s[2];
         } else if (channels >= 6) {
             const float c = s[2] * 0.36f, lfe = s[3] * 0.06f;
             l = s[0] * 0.48f + c + lfe + s[4] * 0.26f;
@@ -243,7 +250,8 @@ public:
         static thread_local std::vector<int16_t> mix;
         if (ch != kStreamChannels) {
             mix.resize(frames * kStreamChannels);
-            limited = downmix_to_stereo(data, frames, ch, mix.data());
+            limited = downmix_to_stereo(data, frames, ch, mix.data(),
+                                        NVN_FLAG("audio_front_only") ? 1 : NVN_FLAG("audio_center_only") ? 2 : 0);
             data = mix.data();
         }
         trace_levels(data, frames, ch, limited);
