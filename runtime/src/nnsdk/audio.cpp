@@ -129,13 +129,13 @@ bool silencio(const void* datos, size_t bytes) {
 }
 
 // The game volume (Display > Sound): the game's own mix peaks near full scale, which is too hot for a phone speaker at a
-// normal volume. Default 60 %.
+// normal volume (docked, the game's mix is clean: default 100 %).
 float game_volume() {
-    if (NVN_FLAG("audio_vol_100")) return 1.0f;
     if (NVN_FLAG("audio_vol_80")) return 0.8f;
+    if (NVN_FLAG("audio_vol_60")) return 0.6f;
     if (NVN_FLAG("audio_vol_40")) return 0.4f;
     if (NVN_FLAG("audio_vol_25")) return 0.25f;
-    return 0.6f;
+    return 1.0f;
 }
 
 // DEBUG (switch audio_dump, live): the game's raw interleaved PCM, as it appends it, to <data>/audio_dump.raw (stops at
@@ -188,10 +188,10 @@ int downmix_to_stereo(const int16_t* in, size_t frames, int channels, int16_t* o
         } else if (channels >= 6 && mode == 2) {
             l = r = s[2];
         } else if (channels >= 6) {
-            const float c = s[2] * 0.36f, lfe = s[3] * 0.06f;
-            l = s[0] * 0.48f + c + lfe + s[4] * 0.26f;
-            r = s[1] * 0.48f + c + lfe + s[5] * 0.26f;
-            if (channels >= 8) l += s[6] * 0.26f, r += s[7] * 0.26f;
+            const float c = s[2] * 0.6f, lfe = s[3] * 0.15f;
+            l = s[0] * 0.85f + c + lfe + s[4] * 0.45f;
+            r = s[1] * 0.85f + c + lfe + s[5] * 0.45f;
+            if (channels >= 8) l += s[6] * 0.45f, r += s[7] * 0.45f;
         } else if (channels == 4) {
             l = s[0] * 0.75f + s[2] * 0.35f;
             r = s[1] * 0.75f + s[3] * 0.35f;

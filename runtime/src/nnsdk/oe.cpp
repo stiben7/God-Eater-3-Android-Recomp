@@ -121,8 +121,10 @@ void GetDisplayVersion(DisplayVersion* out) {
 namespace nnsdk {
 bool docked() {
     static const bool on = [] {
-        const bool d = nnsdk::ini::on("dock_mode");
-        printf("[oe] mode: %s\n", d ? "docked (dock_mode)" : "handheld");
+        // God Eater 3 mixes its sound for the handheld speaker loud and compressed (59 % of the samples clipped in a
+        // recording) and cleanly when docked, so docked is the default; <data>/handheld_mode goes back to handheld.
+        const bool d = !nnsdk::ini::on("handheld_mode");
+        printf("[oe] mode: %s\n", d ? "docked" : "handheld (handheld_mode)");
         return d;
     }();
     return on;

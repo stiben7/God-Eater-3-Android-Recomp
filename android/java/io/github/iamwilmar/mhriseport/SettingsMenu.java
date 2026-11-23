@@ -208,10 +208,10 @@ final class SettingsMenu {
                         + "and Exynos. Takes effect the next time you start the game.",
                 () -> GameActivity.touchOnGpu(ini) ? 1 : 0, v -> ini.set("touch_gpu", v != 0 ? "1" : "0"));
         flag("Docked mode",
-                "The game thinks it's on the dock: its TV picture (1080p output, about twice the pixels of handheld) and "
-                        + "your controls as player 1's Pro Controller. Much more work for the GPU: for strong phones. Takes "
-                        + "effect on the next start.",
-                "dock_mode", false);
+                "On (default): the game thinks it's on the dock: its 1080p TV picture and, importantly, its clean sound "
+                        + "mix. Off: handheld, with the lower resolution and the handheld speaker mix, which is loud and "
+                        + "compressed and distorts on a phone. Takes effect on the next start.",
+                "handheld_mode", true);
         flag("FSR upscaling",
                 "AMD FSR 1 scales the game's picture to the screen sharper than a plain scale. Off: linear scaling, a "
                         + "little cheaper.",
@@ -234,11 +234,10 @@ final class SettingsMenu {
 
         header("Sound");
         exclusive("Game volume",
-                "The game's own mix is very loud (it was made for the Switch's quieter output) and distorts on a phone's "
-                        + "speaker at a normal volume. Default is 60 %: lower it if it still distorts, or raise it for a quiet "
-                        + "headset. Applies at once.",
-                new String[] {"Default (60 %)", "100 %", "80 %", "40 %", "25 %"},
-                new String[] {null, "audio_vol_100", "audio_vol_80", "audio_vol_40", "audio_vol_25"});
+                "Trims the game's sound before it reaches the phone. Default is the game's own level; lower it if your "
+                        + "speaker distorts. (The Android volume keys still apply on top.) Applies at once.",
+                new String[] {"Default (100 %)", "80 %", "60 %", "40 %", "25 %"},
+                new String[] {null, "audio_vol_80", "audio_vol_60", "audio_vol_40", "audio_vol_25"});
 
         header("Performance overlay");
         note("More lines under the FPS counter, each on its own. With any of them on, the counter becomes a small box "
@@ -1759,7 +1758,7 @@ final class SettingsMenu {
     private static final String[] SWITCHES = {
         "60fps", "adreno_turbo", "cutout", "system_bars", "cool_down", "no_hud_heat", "no_tight_barriers", "tight_barriers", "int_attribs", "gpu_unswizzle", "async_present", "pipeline_threads_1", "pipeline_threads_3", "pipeline_threads_4", "fg_target_60", "fg_target_90", "fg_target_120", "dynamic_state", "vertex_input_state",
         "no_dynamic_state", "astc_cache_in_data_folder", "bc_astc", "aspect_16_10", "aspect_21_9", "aspect_4_3", "aspect_stretch", "bindless_arrays", "breadcrumbs",
-        "capture_button", "count_check", "depth_gequal", "dock_mode", "effects_lower", "effects_lowest", "fast_depth", "fps_20", "fps_25", "fps_40",
+        "capture_button", "count_check", "depth_gequal", "dock_mode", "handheld_mode", "effects_lower", "effects_lowest", "fast_depth", "fps_20", "fps_25", "fps_40",
         "fps_45", "gpu_occlusion", "hud_battery", "hud_cpu", "hud_frametime", "hud_gpu", "hud_ram", "hud_shaders", "no_hud_battery", "no_hud_cpu",
         "no_hud_frametime", "no_hud_gpu", "no_hud_ram", "no_hud_shaders", "lsfg_no_guard", "keep_dead_functions", "log_lines", "low_memory", "model_detail_high", "model_detail_low",
         "model_detail_lowest", "model_detail_min", "no_adpf", "no_af", "no_affinity", "no_ao", "no_async_shaders", "no_bindless_arrays", "no_bloom",

@@ -7459,6 +7459,8 @@ void Executor::trace_draw(const cmd::Draw& d) {
             int(ds.stencil_test), st_.polygon.cull_face, st_.polygon.front_face, st_.polygon.polygon_mode,
             st_.attribs.size(), st_.streams.size(), int(st_.primitive_restart), st_.restart_index,
             int(st_.multisample.samples), int(st_.multisample.alpha_to_coverage), int(st_.color.alpha_test));
+    NVN_LOG("F   sesgo de profundidad: activo 0x%x unidades %.4g limite %.4g pendiente %.4g\n",
+            static_cast<unsigned>(st_.polygon.offset_enables), st_.depth_bias[0], st_.depth_bias[1], st_.depth_bias[2]);
     for (size_t k = 0; k < st_.attribs.size(); k++)
         NVN_LOG("F   attrib %zu: formato 0x%x stream %d offset %d\n", k, st_.attribs[k].format, st_.attribs[k].stream,
                 st_.attribs[k].offset);
