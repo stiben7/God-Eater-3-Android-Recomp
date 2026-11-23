@@ -1,0 +1,34 @@
+diff --git a/src/shader_recompiler/backend/spirv/emit_spirv_warp.cpp b/src/shader_recompiler/backend/spirv/emit_spirv_warp.cpp
+index 8d83509..d4f570f 100644
+--- a/src/shader_recompiler/backend/spirv/emit_spirv_warp.cpp
++++ b/src/shader_recompiler/backend/spirv/emit_spirv_warp.cpp
+@@ -296,6 +296,29 @@ Id EmitShuffleDown(EmitContext& ctx, IR::Inst* inst, Id value, Id index, Id clam
+ 
+ Id EmitShuffleButterfly(EmitContext& ctx, IR::Inst* inst, Id value, Id index, Id clamp,
+                         Id segmentation_mask) {
++    // A butterfly by 1, 2 or 3 in a fragment shader stays inside the 2x2 quad: games use it for their own
++    // derivatives. A general shuffle may leave out the helper invocations at triangle edges and read garbage
++    // there, while quad operations always include them, so use a quad swap when the device has them. A quad is
++    // 4 invocations whatever the subgroup size, so this also stands where the other subgroup operations are
++    // off (subgroups smaller than the guest warp); there every quad lane counts as in range.
++    const IR::Value lane{inst->Arg(1)};
++    if (ctx.stage == Stage::Fragment && ctx.profile.support_quad_shuffles && lane.IsImmediate() &&
++        lane.U32() >= 1 && lane.U32() <= 3) {
++        ctx.AddCapability(spv::Capability::GroupNonUniformQuad);
++        const Id swapped{ctx.OpGroupNonUniformQuadBroadcast(ctx.U32[1], SubgroupScope(ctx), value,
++                                                            ctx.Const(lane.U32() - 1))};
++        ctx.opcode_rewrites.emplace_back(swapped.value, spv::Op::OpGroupNonUniformQuadSwap);
++        if (!StageSupportsSubgroups(ctx)) {
++            SetInBoundsFlag(inst, ctx.true_value);
++            return swapped;
++        }
++        const Id thread_id{EmitLaneId(ctx)};
++        const Id max_thread_id{GetMaxThreadId(ctx, thread_id, clamp, segmentation_mask)};
++        const Id src_thread_id{ctx.OpBitwiseXor(ctx.U32[1], thread_id, GuestLane(ctx, index))};
++        const Id in_range{ctx.OpSLessThanEqual(ctx.U1, src_thread_id, max_thread_id)};
++        SetInBoundsFlag(inst, in_range);
++        return ctx.OpSelect(ctx.U32[1], in_range, swapped, value);
++    }
+     if (!StageSupportsSubgroups(ctx)) {
+         SetInBoundsFlag(inst, ctx.false_value);
+         return value;

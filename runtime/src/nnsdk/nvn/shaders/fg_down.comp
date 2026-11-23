@@ -1,0 +1,15 @@
+#version 450
+// Built-in frame generation, 2: a luma level at half the size of the one before (2x2 averages).
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0, r32f) uniform readonly image2D src;
+layout(binding = 1, r32f) uniform writeonly image2D dst;
+layout(push_constant) uniform P { ivec2 size; ivec2 src_size; vec2 inv_src; int flags; int pad; } p;
+
+void main() {
+    ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+    if (q.x >= p.size.x || q.y >= p.size.y) return;
+    ivec2 s = q * 2, last = p.src_size - 1;
+    float sum = imageLoad(src, min(s, last)).r + imageLoad(src, min(s + ivec2(1, 0), last)).r +
+                imageLoad(src, min(s + ivec2(0, 1), last)).r + imageLoad(src, min(s + ivec2(1, 1), last)).r;
+    imageStore(dst, q, vec4(sum * 0.25));
+}

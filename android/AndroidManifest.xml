@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SetupActivity (Java, android/java) finds the user's game files and opens GameActivity, a NativeActivity: libnier.so,
+     which loads the game. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="io.github.iamwilmar.mhriseport"
+    android:versionCode="3"
+    android:versionName="1.2.0">
+
+    <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="33" />
+    <!-- Reads the game files wherever the user put them: SetupActivity asks for it (or adb appops, tools/apk.sh). -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <!-- The touch controls' tap when a button is pressed (GameActivity.tick). -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <application
+        android:label="God Eater 3 Recomp"
+        android:icon="@mipmap/ic_launcher"
+        android:extractNativeLibs="true">
+        <activity
+            android:name=".SetupActivity"
+            android:exported="true"
+            android:screenOrientation="sensorLandscape"
+            android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <!-- GPU driver: the system's or one of the user's for an Adreno (files/drivers/, read by the game at start). -->
+        <activity
+            android:name=".DriverActivity"
+            android:exported="false"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode"
+            android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
+        <!-- The game: a NativeActivity (libnier.so) with the touch controls over it. Exported so tools/apk.sh can open it
+             directly with am start. -->
+        <activity
+            android:name=".GameActivity"
+            android:exported="true"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode"
+            android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+            <meta-data android:name="android.app.lib_name" android:value="nier" />
+        </activity>
+    </application>
+</manifest>

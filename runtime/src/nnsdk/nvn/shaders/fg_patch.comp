@@ -1,0 +1,129 @@
+#version 450
+// Built-in frame generation, 3: the motion of one 8x8 patch of a luma level (a workgroup per patch, a thread per
+// texel), by inverse search (Kroeger et al., "Fast Optical Flow using Dense Inverse Search", 2016). I0's patch is the
+// template; its gradients and their 2x2 matrix are worked out once, so each step only samples I1 where the patch is
+// now and moves it by the least-squares answer to where it lines up. Gradients and differences are taken around their
+// patch means: a patch that only got brighter or darker still matches.
+// The start: the best fit of the coarser level's flow at the patch's middle and corners (doubled: its texels are twice
+// these) and no motion; on the coarsest level (flags 2), the best whole-texel offset within +-4 instead.
+// Out: (motion in texels, what's left of the mean-normalised difference per texel, 1).
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0, r32f) uniform readonly image2D i0;
+layout(binding = 1, r32f) uniform readonly image2D i1;
+layout(binding = 2, rgba16f) uniform readonly image2D coarse;
+layout(binding = 3, rgba32f) uniform writeonly image2D patches;
+// size: the grid of patches; src_size: the level; flags 1: there's a coarser flow (coarse_size packed in extra), 2: search,
+// 4: fewer steps (Light)
+layout(push_constant) uniform P { ivec2 size; ivec2 src_size; vec2 inv_src; int flags; int extra; } p;
+
+const int kIterations = 6;  // (4 with flags 4: Light)
+const int kRadius = 4;      // the coarsest level's search
+const int kCandidates = 6;  // coarser flow at the middle and 4 corners, and no motion
+
+shared vec4 sums[64];
+shared float templ[64];
+shared vec2 starts[1];
+shared float costs[81];  // (the coarsest level's search)
+
+float t0(ivec2 c) { return imageLoad(i0, clamp(c, ivec2(0), p.src_size - 1)).r; }
+float t1(ivec2 c) { return imageLoad(i1, clamp(c, ivec2(0), p.src_size - 1)).r; }
+// I1 between texels (texel centres on whole numbers)
+float bilinear1(vec2 x) {
+    vec2 f = floor(x), t = x - f;
+    ivec2 c = ivec2(f);
+    return mix(mix(t1(c), t1(c + ivec2(1, 0)), t.x), mix(t1(c + ivec2(0, 1)), t1(c + ivec2(1, 1)), t.x), t.y);
+}
+vec4 sum4(vec4 v, uint i) {
+    sums[i] = v;
+    barrier();
+    for (uint s = 32u; s > 0u; s >>= 1u) {
+        if (i < s) sums[i] += sums[i + s];
+        barrier();
+    }
+    vec4 r = sums[0];
+    barrier();
+    return r;
+}
+// How badly the patch fits at offset u (sum of squared mean-normalised differences), from one thread's own loop
+float fit(ivec2 o, vec2 u) {
+    float s = 0.0, s2 = 0.0;
+    for (int k = 0; k < 64; k++) {
+        float e = bilinear1(vec2(o + ivec2(k & 7, k >> 3)) + u) - templ[k];
+        s += e;
+        s2 += e * e;
+    }
+    return s2 - s * s / 64.0;
+}
+
+void main() {
+    uint i = gl_LocalInvocationIndex;
+    ivec2 g = ivec2(gl_WorkGroupID.xy);
+    ivec2 o = min(g * 4, max(p.src_size - 8, ivec2(0)));  // the patch's first texel
+    ivec2 x = o + ivec2(gl_LocalInvocationID.xy);
+    float t = t0(x);
+    templ[i] = t;
+    vec2 grad = 0.5 * vec2(t0(x + ivec2(1, 0)) - t0(x - ivec2(1, 0)), t0(x + ivec2(0, 1)) - t0(x - ivec2(0, 1)));
+    barrier();
+
+    // The start
+    vec2 u = vec2(0.0);
+    if ((p.flags & 2) != 0) {
+        for (int c = int(i); c < 81; c += 64) costs[c] = fit(o, vec2(c % 9 - kRadius, c / 9 - kRadius));
+        barrier();
+        if (i == 0u) {
+            int best = 40;  // (no motion first: on a flat patch every offset ties)
+            for (int c = 0; c < 81; c++)
+                if (costs[c] < costs[best] - 1e-6) best = c;
+            starts[0] = vec2(best % 9 - kRadius, best / 9 - kRadius);
+        }
+        barrier();
+        u = starts[0];
+    } else {
+        // Every thread works out its own texel's difference for each start and the patch sums them up together:
+        // three sums of (difference, its square) for two starts each
+        ivec2 cs = ivec2(p.extra & 0xffff, p.extra >> 16);
+        const ivec2 at[5] = ivec2[5](ivec2(4, 4), ivec2(0, 0), ivec2(7, 0), ivec2(0, 7), ivec2(7, 7));
+        vec2 v[kCandidates];
+        for (int c = 0; c < 5; c++)
+            v[c] = (p.flags & 1) != 0 ? imageLoad(coarse, clamp((o + at[c]) / 2, ivec2(0), cs - 1)).xy * 2.0 : vec2(0.0);
+        v[5] = vec2(0.0);
+        float e[kCandidates];
+        for (int c = 0; c < kCandidates; c++) e[c] = bilinear1(vec2(x) + v[c]) - t;
+        vec4 s01 = sum4(vec4(e[0], e[0] * e[0], e[1], e[1] * e[1]), i);
+        vec4 s23 = sum4(vec4(e[2], e[2] * e[2], e[3], e[3] * e[3]), i);
+        vec4 s45 = sum4(vec4(e[4], e[4] * e[4], e[5], e[5] * e[5]), i);
+        float cost[kCandidates] = float[kCandidates](s01.y - s01.x * s01.x / 64.0, s01.w - s01.z * s01.z / 64.0,
+                                                     s23.y - s23.x * s23.x / 64.0, s23.w - s23.z * s23.z / 64.0,
+                                                     s45.y - s45.x * s45.x / 64.0, s45.w - s45.z * s45.z / 64.0);
+        int best = kCandidates - 1;  // (no motion when it ties; every thread picks the same)
+        for (int c = 0; c < kCandidates; c++)
+            if (cost[c] < cost[best] - 1e-6) best = c;
+        u = v[best];
+    }
+    vec2 start = u;
+
+    // The template's matrix, with the gradients around their mean
+    vec4 m = sum4(vec4(grad, 0.0, 0.0), i);
+    vec2 gc = grad - m.xy / 64.0;
+    vec4 h = sum4(vec4(gc.x * gc.x, gc.x * gc.y, gc.y * gc.y, 0.0), i);
+    h.x += 1e-5;  // (a little damping: an edge, with motion along it unknowable, stays put along it)
+    h.z += 1e-5;
+    float det = h.x * h.z - h.y * h.y;
+    if (det > 1e-9) {
+        mat2 inv = mat2(h.z, -h.y, -h.y, h.x) / det;
+        int steps = (p.flags & 4) != 0 ? 4 : kIterations;
+        for (int k = 0; k < steps; k++) {
+            float e = bilinear1(vec2(x) + u) - t;
+            vec4 b = sum4(vec4(gc * e, 0.0, 0.0), i);
+            vec2 du = inv * b.xy;
+            u -= du;
+            if (dot(du, du) < 1e-4) break;  // (u and du are the same in every thread: they all stop together)
+        }
+        if (any(isnan(u)) || distance(u, start) > 8.0) u = start;  // (ran off: a flat or repeating patch)
+    }
+    // What's left: the mean absolute of the mean-normalised difference
+    float e = bilinear1(vec2(x) + u) - t;
+    vec4 r = sum4(vec4(e, 0.0, 0.0, 0.0), i);
+    vec4 a = sum4(vec4(abs(e - r.x / 64.0), 0.0, 0.0, 0.0), i);
+    if (i == 0u) imageStore(patches, g, vec4(u, a.x / 64.0, 1.0));
+}

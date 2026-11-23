@@ -1,0 +1,42 @@
+#version 450
+// Built-in frame generation, 4: a vector per texel of the level from the patches that cover it (up to four each way),
+// each weighted by how well it fits at this texel: 1 / max(1, |I1(x + u) - I0(x)| in 8-bit steps), as DIS densifies.
+// A patch that straddles an edge then counts for the side it belongs to.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0, rgba32f) uniform readonly image2D patches;
+layout(binding = 1, r32f) uniform readonly image2D i0;
+layout(binding = 2, r32f) uniform readonly image2D i1;
+layout(binding = 3, rgba16f) uniform writeonly image2D flow;
+// size: the level; src_size: the grid of patches
+layout(push_constant) uniform P { ivec2 size; ivec2 src_size; vec2 inv_src; int flags; int pad; } p;
+
+float t1(ivec2 c) { return imageLoad(i1, clamp(c, ivec2(0), p.size - 1)).r; }
+float bilinear1(vec2 x) {
+    vec2 f = floor(x), t = x - f;
+    ivec2 c = ivec2(f);
+    return mix(mix(t1(c), t1(c + ivec2(1, 0)), t.x), mix(t1(c + ivec2(0, 1)), t1(c + ivec2(1, 1)), t.x), t.y);
+}
+
+void main() {
+    ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+    if (q.x >= p.size.x || q.y >= p.size.y) return;
+    float here = imageLoad(i0, q).r;
+    ivec2 last = max(p.size - 8, ivec2(0));
+    vec2 sum = vec2(0.0);
+    float weight = 0.0;
+    for (int gy = q.y / 4 - 2; gy <= q.y / 4 + 1; gy++) {
+        if (gy < 0 || gy >= p.src_size.y) continue;
+        int oy = min(gy * 4, last.y);
+        if (q.y < oy || q.y >= oy + 8) continue;
+        for (int gx = q.x / 4 - 2; gx <= q.x / 4 + 1; gx++) {
+            if (gx < 0 || gx >= p.src_size.x) continue;
+            int ox = min(gx * 4, last.x);
+            if (q.x < ox || q.x >= ox + 8) continue;
+            vec2 u = imageLoad(patches, ivec2(gx, gy)).xy;
+            float w = 1.0 / max(1.0, abs(bilinear1(vec2(q) + u) - here) * 255.0);
+            sum += u * w;
+            weight += w;
+        }
+    }
+    imageStore(flow, q, vec4(weight > 0.0 ? sum / weight : vec2(0.0), 0.0, 0.0));
+}

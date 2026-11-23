@@ -1,0 +1,91 @@
+#version 450
+// Built-in frame generation, 5: the picture at time t between A (0) and B (1), from the two flows (A to B and B to A,
+// in texels of the finest flow level). t is 0.5 for 2x, k / m for adaptive frame generation's k-th picture of m - 1.
+// Each pixel x follows each flow back to where it was: in A at a, with a + t F(a) = x (a few fixed-point steps from
+// a = x), and in B at b, with b + (1 - t) G(b) = x. A vector the other flow doesn't send back
+// (F(a) + G(a + F(a)) far from zero: the forward-backward check) is something that one of the frames doesn't see: covered
+// or uncovered. Of the two ways, the one that both checks out and matches better; its two samples averaged where they
+// agree, else the sample from the frame where it was measured (that one does see it). Bicubic samples, so the made
+// picture is as sharp as the real ones. A pixel the same in both frames (the HUD, still scenery) keeps B's own; where
+// nothing matches at all (a cut, a flash), B.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D frame_a;
+layout(binding = 1) uniform sampler2D frame_b;
+layout(binding = 2) uniform sampler2D flow_ab;
+layout(binding = 3) uniform sampler2D flow_ba;
+layout(binding = 4, rgba8) uniform writeonly image2D dst;
+// size: the picture; src_size: the flows; inv_src: 1 / the picture; scale: picture pixels per flow texel
+layout(push_constant) uniform P { ivec2 size; ivec2 src_size; vec2 inv_src; int flags; int scale; float t; } p;
+
+// A flow at pixel position x (pixel centres on .5), in pixels: one bilinear tap (the flow covers the same picture, so
+// the same normalised position)
+vec2 flow_at(bool forward, vec2 x) {
+    vec2 uv = x * p.inv_src;
+    return (forward ? textureLod(flow_ab, uv, 0.0).xy : textureLod(flow_ba, uv, 0.0).xy) * float(p.scale);
+}
+
+vec3 bilinear(sampler2D s, vec2 x) { return textureLod(s, x * p.inv_src, 0.0).rgb; }
+
+// Catmull-Rom at x (pixel centres on .5) from nine bilinear reads: the middle two texels of each axis share one read
+vec3 bicubic(sampler2D s, vec2 x) {
+    vec2 tc = x - 0.5, f = fract(tc), p1 = floor(tc) + 0.5;
+    vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    vec2 w3 = f * f * (-0.5 + 0.5 * f);
+    vec2 w12 = w1 + w2;
+    vec2 a = (p1 - 1.0) * p.inv_src, m = (p1 + w2 / w12) * p.inv_src, b = (p1 + 2.0) * p.inv_src;
+    vec3 c = textureLod(s, vec2(a.x, a.y), 0.0).rgb * w0.x * w0.y + textureLod(s, vec2(m.x, a.y), 0.0).rgb * w12.x * w0.y +
+             textureLod(s, vec2(b.x, a.y), 0.0).rgb * w3.x * w0.y + textureLod(s, vec2(a.x, m.y), 0.0).rgb * w0.x * w12.y +
+             textureLod(s, vec2(m.x, m.y), 0.0).rgb * w12.x * w12.y + textureLod(s, vec2(b.x, m.y), 0.0).rgb * w3.x * w12.y +
+             textureLod(s, vec2(a.x, b.y), 0.0).rgb * w0.x * w3.y + textureLod(s, vec2(m.x, b.y), 0.0).rgb * w12.x * w3.y +
+             textureLod(s, vec2(b.x, b.y), 0.0).rgb * w3.x * w3.y;
+    return clamp(c, 0.0, 1.0);
+}
+
+float most(vec3 v) { return max(v.r, max(v.g, v.b)); }
+
+void main() {
+    ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+    if (q.x >= p.size.x || q.y >= p.size.y) return;
+    vec2 x = vec2(q) + 0.5;
+    const float t = clamp(p.t, 0.0, 1.0), u = 1.0 - t;
+    bool sharp = (p.flags & 1) != 0;  // bicubic samples (Balanced and Sharp); Light, bilinear
+    vec3 a0 = texelFetch(frame_a, q, 0).rgb, b0 = texelFetch(frame_b, q, 0).rgb;
+    vec3 near0 = t < 0.5 ? a0 : b0;  // (the closer real frame, where nothing can be matched)
+    float still = most(abs(a0 - b0));
+    if (still < 0.006) {
+        imageStore(dst, q, vec4(b0, 1.0));
+        return;
+    }
+    // Where it was in A, and that vector checked against the other flow
+    vec2 pa = x, f = vec2(0.0);
+    for (int k = 0; k < 3; k++) {
+        f = flow_at(true, pa);
+        pa = x - t * f;
+    }
+    float back_f = length(f + flow_at(false, pa + f));
+    // Where it was in B
+    vec2 pb = x, g = vec2(0.0);
+    for (int k = 0; k < 3; k++) {
+        g = flow_at(false, pb);
+        pb = x - u * g;
+    }
+    float back_g = length(g + flow_at(true, pb + g));
+    bool ok_f = back_f < 1.0 + 0.1 * length(f), ok_g = back_g < 1.0 + 0.1 * length(g);
+    float err_f = most(abs(bilinear(frame_a, pa) - bilinear(frame_b, x + u * f)));
+    float err_g = most(abs(bilinear(frame_a, x + t * g) - bilinear(frame_b, pb)));
+    vec3 outc;
+    if (min(err_f, err_g) > 0.35 && !ok_f && !ok_g) {
+        outc = near0;  // (nothing lines up: a cut or a flash)
+    } else if (err_f + (ok_f ? 0.0 : 0.5) <= err_g + (ok_g ? 0.0 : 0.5)) {
+        vec3 a = sharp ? bicubic(frame_a, pa) : bilinear(frame_a, pa);
+        vec3 b = sharp ? bicubic(frame_b, x + u * f) : bilinear(frame_b, x + u * f);
+        outc = ok_f ? mix(mix(a, b, t), a, smoothstep(0.03, 0.10, err_f)) : a;
+    } else {
+        vec3 a = sharp ? bicubic(frame_a, x + t * g) : bilinear(frame_a, x + t * g);
+        vec3 b = sharp ? bicubic(frame_b, pb) : bilinear(frame_b, pb);
+        outc = ok_g ? mix(mix(a, b, t), b, smoothstep(0.03, 0.10, err_g)) : b;
+    }
+    imageStore(dst, q, vec4(mix(b0, outc, smoothstep(0.006, 0.02, still)), 1.0));
+}

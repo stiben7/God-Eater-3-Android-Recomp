@@ -1,0 +1,32 @@
+#version 450
+// A texture level from the Tegra's block-linear layout to plain rows, on the GPU (Settings → Performance → GPU texture
+// unswizzle, gpu_unswizzle). The CPU then only copies the level as it is, one straight memcpy, instead of picking it
+// apart 16 bytes at a time. Same addresses as layout.cpp's Swizzle (row() and column()): one invocation per 16-byte
+// sector of the output. executor.cpp (upload) only sends rows that are whole sectors.
+layout(local_size_x = 64) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer Tiled { uvec4 src[]; };
+layout(std430, set = 0, binding = 1) writeonly buffer Linear { uvec4 dst[]; };
+
+layout(push_constant) uniform Params {
+    uint row_sectors;     // 16-byte sectors per output row
+    uint rows;            // rows in all (slices * height_blocks)
+    uint height_blocks;   // rows per slice
+    uint bh, bd;          // block height in GOBs, block depth in slices
+    uint block_size;      // bytes in a block (512 * bh * bd)
+    uint block_row_size;  // bytes in a row of blocks
+    uint slice_size;      // bytes in a slice of blocks
+    uint groups_x;        // workgroups per row of the dispatch (it's 2D when there are more than 65535)
+} p;
+
+void main() {
+    const uint i = (gl_WorkGroupID.y * p.groups_x + gl_WorkGroupID.x) * 64u + gl_LocalInvocationID.x;
+    if (i >= p.row_sectors * p.rows) return;
+    const uint r = i / p.row_sectors, x = (i % p.row_sectors) * 16u;
+    const uint z = r / p.height_blocks, y = r % p.height_blocks, in_y = y % 8u;
+    const uint row = (z / p.bd) * p.slice_size + (y / (8u * p.bh)) * p.block_row_size +
+                     ((z % p.bd) * p.bh + (y / 8u) % p.bh) * 512u + (in_y / 2u) * 64u + (in_y % 2u) * 16u;
+    const uint in_x = x % 64u;
+    const uint column = (x / 64u) * p.block_size + (in_x / 32u) * 256u + ((in_x % 32u) / 16u) * 32u;
+    dst[i] = src[(row + column) / 16u];
+}

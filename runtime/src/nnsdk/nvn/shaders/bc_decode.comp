@@ -1,0 +1,108 @@
+#version 450
+// BC1 to BC5 on the GPU, for GPUs that can't sample them (Mali, PowerVR). The same integer math as bcn.cpp, so both
+// paths give the same texels. One invocation per 32-bit word of output, row after row, `width` texels per row: one RGBA8
+// texel (BC1-BC3), four R8 texels (BC4) or two RG8 texels (BC5). For BC4 and BC5 executor.cpp rounds `width` up to 4 or
+// 2, so a word never spans two rows (or two blocks).
+// executor.cpp (decode_level) binds the deswizzled blocks and a staging range for the texels, then copies that to the
+// image as the CPU path does.
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer Blocks { uint src[]; };
+layout(std430, set = 0, binding = 1) writeonly buffer Texels { uint dst[]; };
+
+layout(push_constant) uniform Params {
+    uint src_word;     // the first block, in 32-bit words from the start of the binding
+    uint width;        // texels per row (also the output's row length)
+    uint height;       // texel rows
+    uint blocks_wide;  // blocks per source row
+    uint kind;         // bcn::Kind: 1 BC1, 2 BC2, 3 BC3, 4 BC4, 5 BC4 signed, 6 BC5, 7 BC5 signed
+} p;
+
+ivec3 rgb565(uint c) {
+    int r = int(c >> 11) & 31, g = int(c >> 5) & 63, b = int(c) & 31;
+    return ivec3((r << 3) | (r >> 2), (g << 2) | (g >> 4), (b << 3) | (b >> 2));
+}
+
+// 3-bit index n of the 48 that follow the two endpoints of a BC3 alpha block (words lo and hi)
+uint alpha_index(uint lo, uint hi, uint n) {
+    uint bit = 16u + 3u * n;
+    if (bit >= 32u) return (hi >> (bit - 32u)) & 7u;
+    if (bit + 3u <= 32u) return (lo >> bit) & 7u;
+    return ((lo >> bit) | (hi << (32u - bit))) & 7u;
+}
+
+// A BC4 block (words lo, hi: two 8-bit endpoints and a 3-bit index per texel) at texel n, as bcn.cpp's channel_block:
+// the byte it stores (two's complement for the signed formats)
+uint channel(uint lo, uint hi, uint n, bool sgn) {
+    int e0 = int(lo & 255u), e1 = int((lo >> 8) & 255u);
+    if (sgn) {
+        e0 = max(e0 >= 128 ? e0 - 256 : e0, -127);
+        e1 = max(e1 >= 128 ? e1 - 256 : e1, -127);
+    }
+    int k = int(alpha_index(lo, hi, n)), v;
+    if (k == 0) v = e0;
+    else if (k == 1) v = e1;
+    else if (e0 > e1) v = ((8 - k) * e0 + (k - 1) * e1) / 7;
+    else if (k <= 5) v = ((6 - k) * e0 + (k - 1) * e1) / 5;
+    else if (k == 6) v = sgn ? -127 : 0;
+    else v = sgn ? 127 : 255;
+    return uint(v) & 255u;
+}
+
+void single_channels(uvec2 w) {
+    bool bc5 = p.kind >= 6u, sgn = p.kind == 5u || p.kind == 7u;
+    uint per = bc5 ? 2u : 4u;  // texels in a word
+    if (w.x * per >= p.width || w.y >= p.height) return;
+    uint x = w.x * per;
+    uint at = p.src_word + ((w.y >> 2) * p.blocks_wide + (x >> 2)) * (bc5 ? 4u : 2u);
+    uint row = (w.y & 3u) * 4u, out_word = 0u;
+    for (uint i = 0u; i < per; i++) {
+        uint n = row + ((x + i) & 3u);
+        if (bc5) out_word |= (channel(src[at], src[at + 1u], n, sgn) | channel(src[at + 2u], src[at + 3u], n, sgn) << 8) << (16u * i);
+        else out_word |= channel(src[at], src[at + 1u], n, sgn) << (8u * i);
+    }
+    dst[(w.y * p.width + x) / (4u / (bc5 ? 2u : 1u))] = out_word;
+}
+
+void main() {
+    uvec2 t = gl_GlobalInvocationID.xy;
+    if (p.kind >= 4u) {
+        single_channels(t);
+        return;
+    }
+    if (t.x >= p.width || t.y >= p.height) return;
+    bool bc1 = p.kind == 1u;
+    uint at = p.src_word + ((t.y >> 2) * p.blocks_wide + (t.x >> 2)) * (bc1 ? 2u : 4u);
+    uint n = (t.y & 3u) * 4u + (t.x & 3u);  // texel inside its block
+
+    // Colour: the whole BC1 block, the second half of BC2 and BC3 (always four colours there)
+    uint ends = src[at + (bc1 ? 0u : 2u)], indices = src[at + (bc1 ? 1u : 3u)];
+    uint c0 = ends & 0xffffu, c1 = ends >> 16;
+    ivec3 e0 = rgb565(c0), e1 = rgb565(c1);
+    uint sel = (indices >> (2u * n)) & 3u;
+    ivec3 rgb;
+    int a = 255;
+    if (sel == 0u) rgb = e0;
+    else if (sel == 1u) rgb = e1;
+    else if (c0 > c1 || !bc1) rgb = sel == 2u ? (2 * e0 + e1) / 3 : (e0 + 2 * e1) / 3;
+    else if (sel == 2u) rgb = (e0 + e1) / 2;
+    else {
+        rgb = ivec3(0);
+        a = 0;  // BC1's fourth colour with c0 <= c1: transparent
+    }
+
+    if (p.kind == 2u) {  // 4 bits of alpha per texel
+        a = int((src[at + (n >> 3)] >> (4u * (n & 7u))) & 15u) * 17;
+    } else if (p.kind == 3u) {  // two endpoints and a 3-bit index per texel, as BC4
+        uint lo = src[at], hi = src[at + 1u];
+        int a0 = int(lo & 255u), a1 = int((lo >> 8) & 255u);
+        int k = int(alpha_index(lo, hi, n));
+        if (k == 0) a = a0;
+        else if (k == 1) a = a1;
+        else if (a0 > a1) a = ((8 - k) * a0 + (k - 1) * a1) / 7;
+        else if (k <= 5) a = ((6 - k) * a0 + (k - 1) * a1) / 5;
+        else a = k == 6 ? 0 : 255;
+    }
+
+    dst[t.y * p.width + t.x] = uint(rgb.r) | uint(rgb.g) << 8 | uint(rgb.b) << 16 | uint(a) << 24;
+}
