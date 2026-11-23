@@ -250,6 +250,187 @@ bool CreateVp9DecoderConfigurationData(int width, int height, int, MediaData* ou
     return true;
 }
 
+// --- H.264 helpers (God Eater 3 parses its movies' NAL units itself and hands us the SPS and PPS) ---
+
+// Finds the next NAL unit in the Annex-B stream at *cursor (*remaining bytes). Writes its payload (after the 00 00 01
+// start code) to *nal and its size to *nal_size, with the zero bytes before the next start code left out, then moves
+// the cursor to that next start code (null and 0 when the stream is used up). false, with *nal null, when there is no
+// start code in what's left. A port of the same function in the game's own subsdk0.
+bool GetH264NalUnitStartPositionAndNalSize(unsigned char** cursor, unsigned long* remaining, unsigned char** nal,
+                                           unsigned long* nal_size) {
+    if (!cursor || !remaining || !nal || !nal_size) return false;
+    const unsigned char* d = *cursor;
+    const size_t n = *remaining;
+    *nal = nullptr;
+    *nal_size = 0;
+    if (n < 3) return false;
+    size_t i = 0;
+    for (;;) {
+        if (d[i + 2] == 1 && d[i] == 0 && d[i + 1] == 0) break;  // start code at i
+        i++;
+        if (i + 2 >= n) {  // none: leave the cursor on the last two bytes
+            *cursor += i;
+            *remaining = 2;
+            return false;
+        }
+    }
+    const size_t start = i + 3;
+    // The next start code: the first 01 from `start` on that has two zeros before it.
+    size_t j = start;
+    for (;; j++) {
+        while (j < n && d[j] != 1) j++;
+        if (j >= n) break;
+        if (d[j - 1] == 0 && d[j - 2] == 0) break;
+    }
+    size_t end;
+    if (j >= n) {  // the NAL runs to the end of the data
+        end = n;
+        *cursor = nullptr;
+        *remaining = 0;
+    } else {
+        end = j - 2;
+        if (end > i + 4) {  // leave out the zero bytes in front of the next start code
+            size_t k = j - 3;
+            for (;;) {
+                if (d[k] != 0) {
+                    end = k + 1;
+                    break;
+                }
+                if (k <= i + 4) {
+                    end = k;
+                    break;
+                }
+                k--;
+            }
+        }
+        if (j + 2 < n) {
+            *cursor += j - 2;
+            *remaining = n - (j - 2);
+        } else {
+            *cursor = nullptr;
+            *remaining = 0;
+        }
+    }
+    *nal = const_cast<unsigned char*>(d) + start;
+    *nal_size = end - start;
+    return true;
+}
+
+namespace {
+
+// Exp-Golomb reader over an SPS with its emulation-prevention bytes (00 00 03) already removed.
+struct SpsBits {
+    std::vector<uint8_t> d;
+    size_t pos = 0;
+    bool ok = true;
+    uint32_t bit() {
+        if (pos >= d.size() * 8) return ok = false, 0;
+        const uint32_t b = d[pos >> 3] >> (7 - (pos & 7)) & 1;
+        pos++;
+        return b;
+    }
+    uint32_t u(int bits) {
+        uint32_t v = 0;
+        while (bits-- > 0) v = v << 1 | bit();
+        return v;
+    }
+    uint32_t ue() {
+        int zeros = 0;
+        while (ok && bit() == 0 && zeros < 32) zeros++;
+        return zeros ? ((1u << zeros) - 1) + u(zeros) : 0;
+    }
+    int32_t se() {
+        const uint32_t k = ue();
+        return k & 1 ? static_cast<int32_t>((k + 1) / 2) : -static_cast<int32_t>(k / 2);
+    }
+    void skip_scaling_list(int size) {
+        int last = 8, next = 8;
+        for (int j = 0; j < size; j++) {
+            if (next != 0) next = (last + se() + 256) % 256;
+            if (next != 0) last = next;
+        }
+    }
+};
+
+// Picture size of an H.264 SPS NAL unit (its first byte is the NAL header), cropping applied.
+bool sps_size(const uint8_t* nal, size_t size, int* width, int* height) {
+    if (size < 5) return false;
+    SpsBits b;
+    for (size_t k = 1; k < size; k++) {
+        if (k >= 3 && nal[k] == 3 && nal[k - 1] == 0 && nal[k - 2] == 0) continue;
+        b.d.push_back(nal[k]);
+    }
+    const uint32_t profile = b.u(8);
+    b.u(8);  // constraint flags
+    b.u(8);  // level
+    b.ue();  // sps id
+    uint32_t chroma = 1;
+    switch (profile) {
+        case 100: case 110: case 122: case 244: case 44: case 83: case 86: case 118: case 128: case 138: case 139:
+        case 134: case 135:
+            chroma = b.ue();
+            if (chroma == 3) b.u(1);
+            b.ue();
+            b.ue();
+            b.u(1);
+            if (b.u(1))
+                for (int k = 0; k < (chroma == 3 ? 12 : 8); k++)
+                    if (b.u(1)) b.skip_scaling_list(k < 6 ? 16 : 64);
+            break;
+        default: break;
+    }
+    b.ue();  // log2_max_frame_num_minus4
+    const uint32_t poc_type = b.ue();
+    if (poc_type == 0) {
+        b.ue();
+    } else if (poc_type == 1) {
+        b.u(1);
+        b.se();
+        b.se();
+        const uint32_t cycle = b.ue();
+        for (uint32_t k = 0; k < cycle && b.ok; k++) b.se();
+    }
+    b.ue();  // max_num_ref_frames
+    b.u(1);  // gaps_in_frame_num_value_allowed
+    const uint32_t width_mbs = b.ue() + 1, height_map = b.ue() + 1;
+    const uint32_t frame_mbs_only = b.u(1);
+    if (!frame_mbs_only) b.u(1);
+    b.u(1);  // direct_8x8_inference
+    uint32_t left = 0, right = 0, top = 0, bottom = 0;
+    if (b.u(1)) left = b.ue(), right = b.ue(), top = b.ue(), bottom = b.ue();
+    if (!b.ok) return false;
+    const uint32_t crop_x = chroma == 0 || chroma == 3 ? 1 : 2;
+    const uint32_t crop_y = (chroma == 1 ? 2 : 1) * (2 - frame_mbs_only);
+    *width = static_cast<int>(width_mbs * 16 - (left + right) * crop_x);
+    *height = static_cast<int>(height_map * 16 * (2 - frame_mbs_only) - (top + bottom) * crop_y);
+    return *width > 0 && *height > 0;
+}
+
+}  // namespace
+
+// The decoder format for H.264 from its SPS and PPS NAL units (payloads, no start codes): what the decoder here reads
+// is the mime, the size and the two parameter sets as Annex-B "csd-0" / "csd-1".
+bool CreateH264DecoderConfigurationData(const unsigned char* sps, unsigned long sps_size_bytes, const unsigned char* pps,
+                                        unsigned long pps_size_bytes, MediaData* out) {
+    if (!out || !sps || !pps || !sps_size_bytes || !pps_size_bytes) return false;
+    int width = 0, height = 0;
+    if (!sps_size(sps, sps_size_bytes, &width, &height)) return false;
+    out->Clear();
+    set_string(out, "mime", "video/avc");
+    set_int(out, "width", width);
+    set_int(out, "height", height);
+    set_int(out, "max-input-size", width * height);
+    AMediaFormat* f = AMediaFormat_new();
+    std::vector<uint8_t> csd0 = {0, 0, 0, 1}, csd1 = {0, 0, 0, 1};
+    csd0.insert(csd0.end(), sps, sps + sps_size_bytes);
+    csd1.insert(csd1.end(), pps, pps + pps_size_bytes);
+    AMediaFormat_setBuffer(f, "csd-0", csd0.data(), csd0.size());
+    AMediaFormat_setBuffer(f, "csd-1", csd1.data(), csd1.size());
+    out->store_->format = f;
+    printf("[movie] configuracion H.264: %dx%d\n", width, height);
+    return true;
+}
+
 void SetAllocator(void* (*)(size_t, size_t, void*), void (*)(void*, void*), void* (*)(void*, size_t, void*), void*) {}
 void SetCoreMask(uint64_t) {}
 int GetThreadPriority() { return 16; }

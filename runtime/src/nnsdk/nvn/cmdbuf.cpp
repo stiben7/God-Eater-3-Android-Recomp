@@ -461,6 +461,16 @@ void nvnCommandBufferCallCommands(void* cmd, int count, const uint64_t* handles)
 }
 // Nothing to release: a handle's list is owned by its command buffer.
 void nvnDeviceFinalizeCommandHandle(void*, uint64_t) {}
+// Buffer<->texture copy strides: 0 (what God Eater 3 passes so far) is the tightly packed default, which the copies here
+// assume. Say so if a game ever sets a real one.
+void nvnCommandBufferSetCopyRowStride(void*, int64_t stride) {
+    static int logged = 0;
+    if (stride && logged++ < 5) NVN_LOG("SetCopyRowStride %lld: no soportado, se usa el empaquetado\n", static_cast<long long>(stride));
+}
+void nvnCommandBufferSetCopyImageStride(void*, int64_t stride) {
+    static int logged = 0;
+    if (stride && logged++ < 5) NVN_LOG("SetCopyImageStride %lld: no soportado, se usa el empaquetado\n", static_cast<long long>(stride));
+}
 void nvnCommandBufferBindSeparateSampler(void* cmd, int stage, int index, uint64_t handle) {
     record(cmd, cmd::BindSampler{stage, index, handle});
 }
@@ -672,6 +682,8 @@ NVN_PROC(nvnCommandBufferBindTextures);
 NVN_PROC(nvnCommandBufferSetRasterizerDiscard);
 NVN_PROC(nvnCommandBufferCallCommands);
 NVN_PROC(nvnDeviceFinalizeCommandHandle);
+NVN_PROC(nvnCommandBufferSetCopyRowStride);
+NVN_PROC(nvnCommandBufferSetCopyImageStride);
 NVN_PROC(nvnCommandBufferBindSeparateSampler);
 NVN_PROC(nvnCommandBufferBindImage);
 NVN_PROC(nvnCommandBufferBindImages);
