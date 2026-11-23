@@ -20,6 +20,7 @@
 #include <unordered_map>
 
 #include "nnsdk/audio_cola.h"
+#include "nnsdk/ini.h"
 #include "nnsdk/os.h"
 #include "nnsdk/types.h"
 #include "nnsdk/nvn/flags.h"
@@ -135,6 +136,27 @@ float game_volume() {
     if (NVN_FLAG("audio_vol_40")) return 0.4f;
     if (NVN_FLAG("audio_vol_25")) return 0.25f;
     return 0.6f;
+}
+
+// DEBUG (switch audio_dump, live): the game's raw interleaved PCM, as it appends it, to <data>/audio_dump.raw (stops at
+// 48 MB, about 70 s of 5.1), to look for clipping or distortion in the source before any mixing here.
+void dump_source(const void* data, size_t bytes, int channels) {
+    static FILE* f = nullptr;
+    static size_t written = 0;
+    static std::mutex m;
+    if (!NVN_FLAG("audio_dump")) return;
+    std::lock_guard lock(m);
+    if (written >= (size_t{48} << 20)) return;
+    if (!f) {
+        f = fopen((nnsdk::ini::data_dir() + "/audio_dump.raw").c_str(), "wb");
+        printf("[audio] audio_dump: %d canales int16 a 48000 Hz en audio_dump.raw\n", channels);
+        if (!f) written = size_t{48} << 20;
+    }
+    if (f) written += fwrite(data, 1, bytes, f);
+    if (f && written >= (size_t{48} << 20)) {
+        fclose(f);
+        f = nullptr;
+    }
 }
 
 // Interleaved PCM of `channels` channels to stereo. Switch channel orders: 5.1 is FL FR FC LFE BL BR (7.1 adds SL SR),
@@ -266,6 +288,7 @@ public:
             data = mix.data();
         }
         trace_levels(data, frames, ch, limited);
+        dump_source(b->buffer, b->data_size, ch);
         std::lock_guard lock(m_);
         cola_.encolar(out, b, data, frames, cebado, cont);
         liberar_locked();
