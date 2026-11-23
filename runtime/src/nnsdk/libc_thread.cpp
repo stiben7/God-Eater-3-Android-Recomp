@@ -36,6 +36,7 @@ void StartThread(ThreadType* t);
 void WaitThread(ThreadType* t);
 void DestroyThread(ThreadType* t);
 void SetThreadName(ThreadType* t, const char* name);
+bool TryLockMutex(MutexType* m);
 }  // namespace nn::os
 
 namespace {
