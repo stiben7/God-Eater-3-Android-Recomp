@@ -124,7 +124,7 @@ final class SettingsMenu {
     private String[] sectionNames() {
         return new String[] {"Display", "Graphics", "GPU driver", "Frame generation", "Performance",
                 "Touch controls", "Combos", "Controller",
-                "Multiplayer", "Saves", "Mods & cheats", "Debug"};
+                "Mods & cheats", "Debug"};
     }
 
     private void build() {
@@ -157,9 +157,7 @@ final class SettingsMenu {
             case 5: buildTouch(); break;
             case 6: buildCombos(); break;
             case 7: buildController(); break;
-            case 8: buildMultiplayer(); break;
-            case 9: buildSaves(); break;
-            case 10: buildMods(); break;
+            case 8: buildMods(); break;
             default: buildDebug(); break;
         }
     }
@@ -188,17 +186,7 @@ final class SettingsMenu {
                     ini.reset(SWITCHES);
                     build();
                 });
-        header("Resolution");
-        note("The game's 3D resolution. On the handheld console it's 960x540 inside a 720p picture, which is then scaled "
-                        + "to the screen. Higher: sharper, and more work for the GPU.");
-        exclusive("Base resolution",
-                "540p is the game's own. Lower: blurrier, much less GPU work, for weak phones. 720p draws the whole scene "
-                        + "at 1280x720, with no scaling inside the game. In docked mode the same steps apply to the "
-                        + "game's docked resolution. Applies at once.",
-                new String[] {"540p (960x540)", "240p (427x240)", "360p (640x360)", "432p (768x432)", "480p (854x480)", "576p (1024x576)",
-                        "648p (1152x648)", "720p (1280x720)"},
-                new String[] {null, "resolution_240", "resolution_360", "resolution_432", "resolution_480", "resolution_576",
-                        "resolution_648", "resolution_720"});
+        header("Screen");
         exclusive("Aspect ratio",
                 "The shape of the picture on your screen, like Eden's setting. 16:9 is the game's own, with black bars at "
                         + "the sides on a long phone. The others stretch the game's picture to that shape; Stretch fills the "
@@ -216,7 +204,7 @@ final class SettingsMenu {
                 "system_bars", false);
         toggle("Draw controls with the GPU",
                 "The touch controls drawn by the GPU, as Android usually does. Off: drawn by the CPU, which keeps them "
-                        + "away from the phone's OpenGL driver; Mali's crashed there while hunting. Off by default on MediaTek "
+                        + "away from the phone's OpenGL driver; Mali's crashed there during play. Off by default on MediaTek "
                         + "and Exynos. Takes effect the next time you start the game.",
                 () -> GameActivity.touchOnGpu(ini) ? 1 : 0, v -> ini.set("touch_gpu", v != 0 ? "1" : "0"));
         flag("Docked mode",
@@ -224,22 +212,16 @@ final class SettingsMenu {
                         + "your controls as player 1's Pro Controller. Much more work for the GPU: for strong phones. Takes "
                         + "effect on the next start.",
                 "dock_mode", false);
-        flag("Dynamic resolution",
-                "If the GPU can't finish a frame in time, it lowers the resolution in steps (down to 73 % of the base) "
-                        + "and raises it again when there's room. Off: always the base.",
-                "no_dynamic_resolution", true);
         flag("FSR upscaling",
-                "AMD FSR 1 takes the 720p picture to the screen sharper than a plain scale. Off: linear scaling, a "
+                "AMD FSR 1 scales the game's picture to the screen sharper than a plain scale. Off: linear scaling, a "
                         + "little cheaper.",
                 "no_fsr", true);
 
         header("Picture");
         final String[] caps = {null, "fps_20", "fps_25", "fps_40", "fps_45", "60fps"};
         choice("FPS limit",
-                "The game measures how long each frame takes, so between 20 and 60 fps it runs at its normal speed: "
-                        + "fewer fps save GPU, heat and battery with no slow motion. 30 is the game's own (loading screens "
-                        + "always ask for 60). 40 is even on 120 Hz screens; on a 60 Hz one, 40 and 45 judder a little. "
-                        + "Applies at once.",
+                "Caps or unlocks the frame rate. 30 is the game's own; 60 unlocks it. Lower limits save GPU, heat and "
+                        + "battery. 40 is even on 120 Hz screens; on a 60 Hz one, 40 and 45 judder a little. Applies at once.",
                 new String[] {"30 (the game's)", "20", "25", "40", "45", "60"}, () -> {
                     for (int i = caps.length - 1; i > 0; i--)
                         if (has(caps[i])) return i;
@@ -268,32 +250,9 @@ final class SettingsMenu {
     private void buildGraphics() {
         header("Effects");
         flag("Shadows",
-                "Those of the hunters, monsters and scenery. Off, the shadow maps aren't drawn: less work for a weak "
+                "Real-time shadows. Off, the shadow maps aren't drawn: a lot less work for the GPU. "
                         + "GPU. Applies at once.",
                 "no_shadows", true);
-        note(gameStatus());
-        exclusive("Shadow quality",
-                "The size of the shadow maps, as a share of the game's own. Lower: blurrier shadow edges and a lot less "
-                        + "GPU work in one of the heaviest passes. Applies at once.",
-                new String[] {"Game's", "Half", "Quarter"}, new String[] {null, "shadow_half", "shadow_quarter"});
-        flag("Dynamic shadows",
-                "Shadows of things that move (hunters, monsters, swaying plants), like the PC's option. Off: only the "
-                        + "scenery's shadows, a lot less shadow work. Applies at once.",
-                "no_dynamic_shadows", true);
-        flag("Foliage sway",
-                "Grass and leaves moving in the wind, like the PC's option. Off: they stand still, a bit less vertex "
-                        + "work. Applies at once.",
-                "no_foliage_sway", true);
-        exclusive("Effects resolution (experimental)",
-                "The size of the buffer the game draws particles, smoke and other see-through effects into, as steps "
-                        + "below the game's own (which is already reduced). Lower: blurrier effects, less GPU work in "
-                        + "big fights. Applies at once.",
-                new String[] {"Game's", "One step lower", "Two steps lower"},
-                new String[] {null, "effects_lower", "effects_lowest"});
-        flag("Ambient occlusion (experimental)",
-                "The soft darkening where things meet (the game's geometry AO). Off: flatter look, less GPU work. "
-                        + "Applies at once.",
-                "no_ao", true);
         flag("Fast depth test",
                 "The colour pass skips hidden pixels earlier (it uses the depth test the GPU can reject fast with), "
                         + "which can give a few more FPS, mostly on Adreno. Grass and leaves keep the game's own test so "
@@ -301,8 +260,8 @@ final class SettingsMenu {
                 "fast_depth", false);
         header("Detail");
         flag("Occlusion results",
-                "Lets the game see which small things its GPU test found visible, so endemic life, wirebugs and some "
-                        + "lights get drawn. Off: they stay invisible (you can still gather them). Costs almost nothing. "
+                "Lets the game see which things its GPU test found visible, so effects that depend on that "
+                        + "test get drawn. Off: they can stay invisible. Costs almost nothing. "
                         + "Applies at once.",
                 "no_readback_copies", true);
         if (gpu.noBc()) {
@@ -320,16 +279,6 @@ final class SettingsMenu {
                         build();
                     });
         }
-        exclusive("Model detail",
-                "How soon models switch to their simpler versions with distance (the PC version's mesh quality). Lower: "
-                        + "less work for the GPU, simpler models a little closer. Applies at once.",
-                new String[] {"Game's", "Low", "Lowest", "Minimum", "High"},
-                new String[] {null, "model_detail_low", "model_detail_lowest", "model_detail_min", "model_detail_high"});
-        exclusive("Texture streaming",
-                "How many of the largest texture sizes the game skips loading. Fewer: blurrier textures up close, less "
-                        + "memory and bandwidth. Applies as textures load.",
-                new String[] {"Game's", "One size smaller", "Two sizes smaller"},
-                new String[] {null, "texture_bias_1", "texture_bias_2"});
         header("Textures");
         {
             final String[] files = {null, "bindless_arrays", "no_bindless_arrays"};

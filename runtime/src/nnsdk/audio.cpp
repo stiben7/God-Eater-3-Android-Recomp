@@ -6,7 +6,10 @@
 #include <pthread.h>
 #include <time.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cstdlib>
+#include <vector>
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -123,6 +126,53 @@ bool silencio(const void* datos, size_t bytes) {
     return true;
 }
 
+// Interleaved PCM of `channels` channels to stereo. Switch channel orders: 5.1 is FL FR FC LFE BL BR (7.1 adds SL SR),
+// 4 is FL FR BL BR. The weights keep a surround mix from clipping where one stereo pair carries most of the sound.
+void downmix_to_stereo(const int16_t* in, size_t frames, int channels, int16_t* out) {
+    auto clamp = [](int v) { return static_cast<int16_t>(v > 32767 ? 32767 : v < -32768 ? -32768 : v); };
+    for (size_t f = 0; f < frames; f++) {
+        const int16_t* s = in + f * channels;
+        int l, r;
+        if (channels == 1) {
+            l = r = s[0];
+        } else if (channels >= 6) {
+            const int c = s[2] * 42 / 100, lfe = s[3] * 20 / 100;
+            l = s[0] * 70 / 100 + c + lfe + s[4] * 42 / 100;
+            r = s[1] * 70 / 100 + c + lfe + s[5] * 42 / 100;
+            if (channels >= 8) l += s[6] * 42 / 100, r += s[7] * 42 / 100;
+        } else if (channels == 4) {
+            l = s[0] + s[2] * 50 / 100;
+            r = s[1] + s[3] * 50 / 100;
+        } else {
+            l = s[0];
+            r = s[1];
+        }
+        out[f * 2] = clamp(l);
+        out[f * 2 + 1] = clamp(r);
+    }
+}
+
+// DEBUG: every 2 s of wall time, what the game has been appending (stereo, after the mix-down): buffers, frames and the
+// loudest sample. A flat 0 peak means the game is sending silence.
+void trace_levels(const int16_t* stereo, size_t frames, int channels) {
+    static std::atomic<uint64_t> buffers{0}, total_frames{0};
+    static std::atomic<int> peak{0};
+    static std::atomic<int64_t> next_ns{0};
+    int p = 0;
+    for (size_t i = 0; i < frames * 2; i++) p = std::max(p, std::abs(static_cast<int>(stereo[i])));
+    int old = peak.load(std::memory_order_relaxed);
+    while (p > old && !peak.compare_exchange_weak(old, p)) {}
+    buffers++;
+    total_frames += frames;
+    const int64_t now = ahora_ns();
+    int64_t due = next_ns.load();
+    if (now >= due && next_ns.compare_exchange_strong(due, now + 2'000'000'000LL)) {
+        printf("[audio] 2 s: %llu buffers de %d canales, %llu frames, pico %d de 32767\n",
+               static_cast<unsigned long long>(buffers.exchange(0)), channels,
+               static_cast<unsigned long long>(total_frames.exchange(0)), peak.exchange(0));
+    }
+}
+
 class HostAudioOut {
 public:
     int channels = 2;
@@ -169,10 +219,21 @@ public:
         opens_++;
     }
     void append(HostAudioOut* out, AudioOutBuffer* b) {
-        const size_t frames = b->data_size / (kStreamChannels * sizeof(int16_t));
+        // The game's buffers carry out->channels interleaved channels (God Eater 3: 5.1); the queue and the phone's
+        // stream are stereo, so anything else is mixed down first.
+        const int ch = out->channels > 0 ? out->channels : 2;
+        const size_t frames = b->data_size / (static_cast<size_t>(ch) * sizeof(int16_t));
         const bool cebado = !out->started && silencio(b->buffer, b->data_size), cont = continuidad();
+        const int16_t* data = static_cast<const int16_t*>(b->buffer);
+        static thread_local std::vector<int16_t> mix;
+        if (ch != kStreamChannels) {
+            mix.resize(frames * kStreamChannels);
+            downmix_to_stereo(data, frames, ch, mix.data());
+            data = mix.data();
+        }
+        trace_levels(data, frames, ch);
         std::lock_guard lock(m_);
-        cola_.encolar(out, b, static_cast<const int16_t*>(b->buffer), frames, cebado, cont);
+        cola_.encolar(out, b, data, frames, cebado, cont);
         liberar_locked();
         appended_++;
         if (cebado) cebados_++;
