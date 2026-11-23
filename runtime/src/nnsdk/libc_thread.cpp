@@ -31,6 +31,11 @@ void InitializeMutex(MutexType* m, bool recursive, int lock_level);
 void InitializeConditionVariable(ConditionVariableType* c);
 void BroadcastConditionVariable(ConditionVariableType* c);
 ThreadType* GetCurrentThread();
+Result CreateThread(ThreadType* t, ThreadFunction fn, void* arg, void* stack, size_t stack_size, int priority);
+void StartThread(ThreadType* t);
+void WaitThread(ThreadType* t);
+void DestroyThread(ThreadType* t);
+void SetThreadName(ThreadType* t, const char* name);
 }  // namespace nn::os
 
 namespace {
