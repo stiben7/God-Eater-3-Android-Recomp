@@ -954,6 +954,7 @@ void android_main(android_app* app) {
     }
     g_cfg.exefs = rutas::get().exefs;
     g_cfg.nnsdk = "libnnsdk.so";
+    g_cfg.list_stubs = true;  // God Eater 3 bring-up: name every import the runtime stubs out
     // DEPURACIÓN: el vigilante interrumpe el hilo del juego cada 15 s para volcar su pila (un tirón y más de 100 líneas en
     // la SD cada vez): solo con <datos>/verbose_log.
     g_cfg.watchdog_seconds = access((g_data + "/verbose_log").c_str(), F_OK) == 0 ? 15 : 0;

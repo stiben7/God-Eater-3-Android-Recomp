@@ -44,6 +44,9 @@ uint32_t npdm_stack_size(const std::string& path) {
     return v;
 }
 
+void* (*g_fallback_malloc)(size_t) = nullptr;
+void (*g_fallback_free)(void*) = nullptr;
+
 template <typename Fn>
 Fn game_fn(const Module& m, const char* name) {
     const ElfSym* s = m.find_export(name);
@@ -130,8 +133,23 @@ int nier_run(const RunConfig& cfg) {
     NnsdkHost host{};
     host.game_malloc = game_fn<void* (*)(size_t)>(g_main, "malloc");
     host.game_free = game_fn<void (*)(void*)>(g_main, "free");
+    // MH Rise's main carries its own operator new/delete; God Eater 3's come from the sdk module (which the runtime
+    // replaces), so main doesn't export them. Then use what main's own imports of them resolved to (libnnsdk's), or
+    // failing that the game's malloc/free.
     host.game_new = game_fn<void* (*)(size_t)>(g_main, "_Znwm");
     host.game_delete = game_fn<void (*)(void*)>(g_main, "_ZdlPv");
+    if (!host.game_new) host.game_new = reinterpret_cast<void* (*)(size_t)>(nnsdk_symbol("_Znwm"));
+    if (!host.game_delete) host.game_delete = reinterpret_cast<void (*)(void*)>(nnsdk_symbol("_ZdlPv"));
+    if (!host.game_new && host.game_malloc) {
+        g_fallback_malloc = host.game_malloc;
+        host.game_new = [](size_t n) -> void* { return g_fallback_malloc(n ? n : 1); };
+    }
+    if (!host.game_delete && host.game_free) {
+        g_fallback_free = host.game_free;
+        host.game_delete = [](void* p) { if (p) g_fallback_free(p); };
+    }
+    printf("new/delete: %s
+", game_fn<void*>(g_main, "_Znwm") ? "main's" : nnsdk_symbol("_Znwm") ? "libnnsdk's" : "game malloc/free");
     host.thread_start = game_thread_start;
     host.tls_template = tls::set_template;
     host.make_stub = make_named_stub;
