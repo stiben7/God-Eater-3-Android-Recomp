@@ -127,13 +127,24 @@ bool silencio(const void* datos, size_t bytes) {
     return true;
 }
 
+// The game volume (Display > Sound): the game's own mix peaks near full scale, which is too hot for a phone speaker at a
+// normal volume. Default 60 %.
+float game_volume() {
+    if (NVN_FLAG("audio_vol_100")) return 1.0f;
+    if (NVN_FLAG("audio_vol_80")) return 0.8f;
+    if (NVN_FLAG("audio_vol_40")) return 0.4f;
+    if (NVN_FLAG("audio_vol_25")) return 0.25f;
+    return 0.6f;
+}
+
 // Interleaved PCM of `channels` channels to stereo. Switch channel orders: 5.1 is FL FR FC LFE BL BR (7.1 adds SL SR),
 // 4 is FL FR BL BR. Gains leave headroom (a surround mix has the front pair near full scale already, and adding the
 // centre and rears on top clipped), and what still goes over is rounded off by a soft knee instead of hard-clipped.
 // Returns how many samples the knee had to touch.
 // mode (debug switches audio_front_only / audio_center_only): 1 plays just the front pair, 2 just the centre channel,
 // to tell whether a distortion is in the game's own audio or comes from this mix.
-int downmix_to_stereo(const int16_t* in, size_t frames, int channels, int16_t* out, int mode) {
+// gain scales the result before the limiter (the game's mix is much louder than a phone speaker likes).
+int downmix_to_stereo(const int16_t* in, size_t frames, int channels, int16_t* out, int mode, float gain) {
     constexpr float kKnee = 22000.0f, kMax = 32767.0f;
     int touched = 0;
     auto limit = [&](float v) -> int16_t {
@@ -166,8 +177,8 @@ int downmix_to_stereo(const int16_t* in, size_t frames, int channels, int16_t* o
             l = s[0];
             r = s[1];
         }
-        out[f * 2] = limit(l);
-        out[f * 2 + 1] = limit(r);
+        out[f * 2] = limit(l * gain);
+        out[f * 2 + 1] = limit(r * gain);
     }
     return touched;
 }
@@ -248,10 +259,10 @@ public:
         const int16_t* data = static_cast<const int16_t*>(b->buffer);
         int limited = 0;
         static thread_local std::vector<int16_t> mix;
-        if (ch != kStreamChannels) {
+        {
             mix.resize(frames * kStreamChannels);
             limited = downmix_to_stereo(data, frames, ch, mix.data(),
-                                        NVN_FLAG("audio_front_only") ? 1 : NVN_FLAG("audio_center_only") ? 2 : 0);
+                                        NVN_FLAG("audio_front_only") ? 1 : NVN_FLAG("audio_center_only") ? 2 : 0, game_volume());
             data = mix.data();
         }
         trace_levels(data, frames, ch, limited);

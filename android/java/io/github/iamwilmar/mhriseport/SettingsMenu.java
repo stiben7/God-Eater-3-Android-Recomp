@@ -232,6 +232,14 @@ final class SettingsMenu {
         flag("FPS counter", "The number in the corner.", "no_fps",
                 true);
 
+        header("Sound");
+        exclusive("Game volume",
+                "The game's own mix is very loud (it was made for the Switch's quieter output) and distorts on a phone's "
+                        + "speaker at a normal volume. Default is 60 %: lower it if it still distorts, or raise it for a quiet "
+                        + "headset. Applies at once.",
+                new String[] {"Default (60 %)", "100 %", "80 %", "40 %", "25 %"},
+                new String[] {null, "audio_vol_100", "audio_vol_80", "audio_vol_40", "audio_vol_25"});
+
         header("Performance overlay");
         note("More lines under the FPS counter, each on its own. With any of them on, the counter becomes a small box "
                 + "that also shows how many of the fps are real when frame generation is on. All apply at once.");
