@@ -1175,9 +1175,24 @@ nvn::Boolean nvnProgramSetShaders(void* program, int count, const ShaderData* st
 }
 void nvnProgramSetDebugLabel(void*, const char*) {}
 
+// NVN's extended shader table (God Eater 3 uses it): 24 bytes per stage, the code address and the control section as in
+// ShaderData, then one more 8-byte field the game fills from its own shader record (not needed here).
+struct ShaderDataExt {
+    uint64_t code;
+    const void* control;
+    uint64_t extra;
+};
+nvn::Boolean nvnProgramSetShadersExt(void* program, int count, const ShaderDataExt* stages) {
+    if (count < 0 || count > 6) return 0;
+    ShaderData plain[6];
+    for (int k = 0; k < count; k++) plain[k] = {stages[k].code, stages[k].control};
+    return nvnProgramSetShaders(program, count, plain);
+}
+
 }  // extern "C"
 
 NVN_PROC(nvnProgramInitialize);
 NVN_PROC(nvnProgramFinalize);
 NVN_PROC(nvnProgramSetDebugLabel);
 NVN_PROC(nvnProgramSetShaders);
+NVN_PROC(nvnProgramSetShadersExt);
