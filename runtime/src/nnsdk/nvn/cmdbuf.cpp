@@ -443,12 +443,22 @@ void nvnCommandBufferBindTextures(void* cmd, int stage, int first, int count, co
     for (int k = 0; k < count && handles; k++) record(cmd, cmd::BindTexture{stage, first + k, handles[k], true});
 }
 // Rasterizer discard only skips the fragment work of depth/stream-out-only passes: drawing them anyway is harmless.
-void nvnCommandBufferSetRasterizerDiscard(void*, int) {}
+void nvnCommandBufferSetRasterizerDiscard(void*, int discard) {
+    static int logged = 0;  // if the game really uses it, the passes drawn anyway may be behind some artifacts
+    if (discard && logged++ < 10) NVN_LOG("SetRasterizerDiscard(1): se ignora y el pase se dibuja\n");
+}
 // Command handles are pointers to recorded lists (EndRecording). Calling one replays its commands in the caller's
-// recording; they stay owned by the called list, which the game keeps alive until the caller has run (NVN requires it).
+// recording. A command must not outlive the list whose memory it points into (inline buffer updates, spilled vectors),
+// and the executor runs a frame behind the game: the called list can be re-recorded for the next frame while this copy
+// is still waiting, which showed as shadows and uniforms going wrong. So the copy takes its own copy of that memory.
 void nvnCommandBufferCallCommands(void* cmd, int count, const uint64_t* handles) {
     CommandList* dst = recording(cmd);
     if (!dst) return;
+    auto own_vec = [dst](auto& v) {
+        using V = std::decay_t<decltype(v)>;
+        if (v.size() > V::inline_capacity())
+            v = V(v.data(), v.size(), [dst](size_t bytes) { return dst->spill(bytes); });
+    };
     for (int k = 0; k < count && handles; k++) {
         const CommandList* src = reinterpret_cast<const CommandList*>(handles[k]);
         if (!src) continue;
@@ -456,6 +466,25 @@ void nvnCommandBufferCallCommands(void* cmd, int count, const uint64_t* handles)
             if (dst->commands.size() == dst->commands.capacity()) [[unlikely]]
                 grow(*dst);
             dst->commands.push_back(c);
+            std::visit(
+                [&](auto& v) {
+                    using T = std::decay_t<decltype(v)>;
+                    if constexpr (std::is_same_v<T, cmd::UpdateBuffer>) {
+                        if (v.data && v.size) {
+                            void* mine = dst->inline_data(v.size);
+                            memcpy(mine, v.data, v.size);
+                            v.data = mine;
+                        }
+                    } else if constexpr (std::is_same_v<T, cmd::BindVertexBuffers> ||
+                                         std::is_same_v<T, cmd::BindUniformBuffers>) {
+                        own_vec(v.ranges);
+                    } else if constexpr (std::is_same_v<T, cmd::BindVertexAttribs>) {
+                        own_vec(v.attribs);
+                    } else if constexpr (std::is_same_v<T, cmd::BindVertexStreams>) {
+                        own_vec(v.streams);
+                    }
+                },
+                dst->commands.back());
         }
     }
 }

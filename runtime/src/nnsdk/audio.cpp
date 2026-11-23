@@ -148,10 +148,10 @@ int downmix_to_stereo(const int16_t* in, size_t frames, int channels, int16_t* o
         if (channels == 1) {
             l = r = s[0];
         } else if (channels >= 6) {
-            const float c = s[2] * 0.5f, lfe = s[3] * 0.1f;
-            l = s[0] * 0.62f + c + lfe + s[4] * 0.35f;
-            r = s[1] * 0.62f + c + lfe + s[5] * 0.35f;
-            if (channels >= 8) l += s[6] * 0.35f, r += s[7] * 0.35f;
+            const float c = s[2] * 0.36f, lfe = s[3] * 0.06f;
+            l = s[0] * 0.48f + c + lfe + s[4] * 0.26f;
+            r = s[1] * 0.48f + c + lfe + s[5] * 0.26f;
+            if (channels >= 8) l += s[6] * 0.26f, r += s[7] * 0.26f;
         } else if (channels == 4) {
             l = s[0] * 0.75f + s[2] * 0.35f;
             r = s[1] * 0.75f + s[3] * 0.35f;
@@ -274,7 +274,7 @@ public:
             if (!next_report_ns_) next_report_ns_ = t + kInformeNs;
             if (t >= next_report_ns_) informe_locked(t, informe, sizeof informe);
         }
-        if (informe[0] && NVN_FLAG("verbose_log")) fputs(informe, stdout);
+        if (informe[0]) fputs(informe, stdout);  // one line per 5 s: gaps and xruns show up in every log
         if (dead_.exchange(false)) std::thread([this] { reopen(); }).detach();
         return b;
     }

@@ -444,7 +444,10 @@ SwVideo* sw_open(const uint8_t* csd0, size_t n0, const uint8_t* csd1, size_t n1)
         s->ctx->extradata_size = static_cast<int>(total);
     }
     s->ctx->pkt_timebase = AVRational{1, 1000000};
-    s->ctx->thread_count = 1;
+    // 1080p H.264 on one thread can't keep up on a phone and starves the game's audio during cutscenes: decode with
+    // frame and slice threads (the caller already copes with frames coming out late).
+    s->ctx->thread_count = 3;
+    s->ctx->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
     int r = avcodec_open2(s->ctx, codec, nullptr);
     if (r < 0) {
         printf("[movie] ffmpeg: avcodec_open2 falló (%d)\n", r);
