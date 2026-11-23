@@ -5532,6 +5532,8 @@ bool Executor::ensure_render_pass(bool full_area) {
             const bool stored = (slots[i] >= 0 ? ops.color_store[slots[i]] : ops.depth_store) == VK_ATTACHMENT_STORE_OP_STORE;
             a += std::string(" ") + (slots[i] >= 0 ? std::to_string(slots[i]) : std::string("d")) + ":" + (clear ? "C" : "L") +
                  (stored ? "s" : "n");
+            if (slots[i] < 0 && target_views[i])
+                a += "@capa" + std::to_string((target_views[i]->flags & kViewLayers) ? target_views[i]->base_layer : 0);
         }
         NVN_LOG("F pase %ux%u área %d,%d %ux%u adjuntos%s\n", width, height, area.offset.x, area.offset.y, area.extent.width,
                 area.extent.height, a.c_str());
@@ -5714,6 +5716,9 @@ void Executor::flush_clears(const Texture* only) {
         const VkImageSubresourceRange range{p.aspects, (v.flags & kViewLevels) ? static_cast<uint32_t>(v.base_level) : 0u, 1,
                                             (v.flags & kViewLayers) ? static_cast<uint32_t>(v.base_layer) : 0u, 1};
         note_gpu_work();
+        if (frame_ == trace_frame_)
+            NVN_LOG("F borrado diferido hecho aparte: capa %u nivel %u aspecto 0x%x\n", range.baseArrayLayer, range.baseMipLevel,
+                    static_cast<unsigned>(p.aspects));
         if (p.aspects & VK_IMAGE_ASPECT_COLOR_BIT)
             vkCmdClearColorImage(cmd_, p.texture->image, VK_IMAGE_LAYOUT_GENERAL, &p.value.color, 1, &range);
         else
@@ -5778,7 +5783,13 @@ void Executor::clear_depth_stencil(const cmd::ClearDepthStencil& c) {
     if (!aspect) return;
     VkClearValue value{};
     value.depthStencil = {c.depth, static_cast<uint32_t>(c.stencil)};
-    if (deferrable && (aspect & t->aspect) && defer_clear(t, st_.rt.depth_view, aspect & t->aspect, value)) return;
+    const int clear_layer = (st_.rt.depth_view.flags & kViewLayers) ? st_.rt.depth_view.base_layer : 0;
+    const bool deferred = deferrable && (aspect & t->aspect) && defer_clear(t, st_.rt.depth_view, aspect & t->aspect, value);
+    if (frame_ == trace_frame_)
+        NVN_LOG("F clearDS capa %d valor %.2f aspecto 0x%x (textura 0x%x, %u capas): %s\n", clear_layer, c.depth,
+                static_cast<unsigned>(aspect), static_cast<unsigned>(t->aspect), t->layers,
+                deferred ? "diferido" : deferrable ? "inmediato (no se pudo diferir)" : "inmediato");
+    if (deferred) return;
     if (!ensure_render_pass() || !t->image) return;
     if (!rp_area_full_) {  // como en clear_color
         split_why_ = "borrado en un pase con área recortada";
