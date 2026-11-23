@@ -128,6 +128,13 @@ public:
     int channels = 2;
     bool started = false;
     std::deque<AudioOutBuffer*> released;  // con el lock de SharedStream
+    // God Eater 3 opens its output with an AutoClear SystemEvent that the SDK signals when a buffer is released: the
+    // game's audio thread and its movie clock wait on it. Null for the Wwise-style open without one.
+    os::SystemEventType* event = nullptr;
+    void push_released(AudioOutBuffer* b) {
+        released.push_back(b);
+        if (event) nnsdk::signal_system_event(event);
+    }
 };
 
 // Una sola salida de AAudio para todo el proceso, siempre en marcha: toca la cola (lo que mezcló Wwise o
@@ -153,7 +160,7 @@ public:
         std::lock_guard lock(m_);
         if (active_ == out) active_ = nullptr;
         cola_.parar(out, cont, [](void* o, void* b) {
-            static_cast<HostAudioOut*>(o)->released.push_back(static_cast<AudioOutBuffer*>(b));
+            static_cast<HostAudioOut*>(o)->push_released(static_cast<AudioOutBuffer*>(b));
         });
         (closing ? closes_ : stops_)++;
     }
@@ -258,7 +265,7 @@ private:
 
     void liberar_locked() {
         cola_.liberar([](void* o, void* b) {
-            static_cast<HostAudioOut*>(o)->released.push_back(static_cast<AudioOutBuffer*>(b));
+            static_cast<HostAudioOut*>(o)->push_released(static_cast<AudioOutBuffer*>(b));
         });
     }
     // DEPURACIÓN (registro): cada 5 s de reloj (no por salida: antes el informe solo salía si una salida duraba
@@ -397,10 +404,29 @@ Result OpenDefaultAudioOut(AudioOut* out, const AudioOutParameter& p) {
     return ResultSuccess;
 }
 
+// The SDK's newer overload: also creates an AutoClear SystemEvent, signaled whenever a buffer is released (God Eater 3).
+Result OpenDefaultAudioOut(AudioOut* out, os::SystemEvent* event, const AudioOutParameter& p) {
+    Result r = OpenDefaultAudioOut(out, p);
+    auto* e = reinterpret_cast<os::SystemEventType*>(event);
+    if (e) {
+        nnsdk::create_system_event(e, /*auto_clear=*/true, /*signaled=*/false);
+        std::lock_guard lock(g_outs_mutex);
+        auto it = g_outs.find(out);
+        if (it != g_outs.end()) it->second->event = e;
+    }
+    return r;
+}
+
 int GetAudioOutChannelCount(const AudioOut* out) {
     HostAudioOut* h = host(out);
     return h ? h->channels : 2;
 }
+int GetAudioOutSampleRate(const AudioOut*) { return kSampleRate; }
+int GetAudioOutSampleFormat(const AudioOut*) { return 2; }  // SampleFormat_PcmInt16
+const char* GetAudioOutName(const AudioOut*) { return "MainAudioOut"; }
+size_t GetAudioOutBufferDataSize(const AudioOutBuffer* b) { return b->data_size; }
+// The master volume of the output device: Android's own volume keys stay in charge.
+void SetAudioDeviceOutputVolume(const AudioDeviceName*, float) {}
 
 void SetAudioOutBufferInfo(AudioOutBuffer* b, void* buffer, size_t buffer_size, size_t data_size) {
     b->next = nullptr;
