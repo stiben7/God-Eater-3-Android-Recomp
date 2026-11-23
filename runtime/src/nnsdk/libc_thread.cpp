@@ -197,4 +197,80 @@ int nngame_pthread_rwlock_unlock(pthread_rwlock_t* l) {
     return 0;
 }
 
+// --- Threads (God Eater 3's middleware starts its workers with pthread_create) ---
+// A pthread_t is the ThreadType* of an nn::os thread, so a created thread is an nn::os thread: it gets the game's TLS
+// block, name and core like any other. The ThreadType storage is ours (the game never sees it, only the handle).
+
+}  // extern "C"
+
+namespace {
+
+struct PthreadStart {
+    void* (*fn)(void*);
+    void* arg;
+    void* result = nullptr;
+    os::ThreadType* type = nullptr;
+};
+std::mutex g_pthreads_m;
+std::unordered_map<os::ThreadType*, PthreadStart*> g_pthreads;
+
+void pthread_trampoline(void* p) {
+    auto* s = static_cast<PthreadStart*>(p);
+    s->result = s->fn(s->arg);
+}
+
+}  // namespace
+
+extern "C" {
+
+int nngame_pthread_create(pthread_t* out, const pthread_attr_t*, void* (*fn)(void*), void* arg) {
+    if (!out || !fn) return EINVAL;
+    constexpr size_t kThreadTypeSize = 0x200;  // nn::os::ThreadType is 0x1c0 bytes
+    constexpr size_t kDefaultStack = size_t{1} << 20;
+    constexpr int kDefaultPriority = 16;
+    auto* type = static_cast<os::ThreadType*>(calloc(1, kThreadTypeSize));
+    auto* start = new PthreadStart{fn, arg};
+    start->type = type;
+    os::CreateThread(type, pthread_trampoline, start, nullptr, kDefaultStack, kDefaultPriority);
+    {
+        std::lock_guard lock(g_pthreads_m);
+        g_pthreads[type] = start;
+    }
+    *out = reinterpret_cast<pthread_t>(type);  // before the thread runs: it may call pthread_self / setname on itself
+    os::StartThread(type);
+    return 0;
+}
+
+int nngame_pthread_join(pthread_t t, void** result) {
+    auto* type = reinterpret_cast<os::ThreadType*>(t);
+    PthreadStart* start = nullptr;
+    {
+        std::lock_guard lock(g_pthreads_m);
+        auto it = g_pthreads.find(type);
+        if (it == g_pthreads.end()) return ESRCH;
+        start = it->second;
+        g_pthreads.erase(it);
+    }
+    os::WaitThread(type);
+    if (result) *result = start->result;
+    os::DestroyThread(type);
+    free(type);
+    delete start;
+    return 0;
+}
+
+int nngame_pthread_setname_np(pthread_t t, const char* name) {
+    auto* type = reinterpret_cast<os::ThreadType*>(t);
+    std::lock_guard lock(g_pthreads_m);
+    if (g_pthreads.count(type)) os::SetThreadName(type, name);  // only threads made by nngame_pthread_create
+    return 0;
+}
+
+// The cores a thread may run on are the runtime's business (os.cpp keeps the Switch's three application cores).
+int nngame_pthread_setaffinity_np(pthread_t, size_t, const void*) { return 0; }
+
+int nngame_pthread_mutex_trylock(pthread_mutex_t* m) { return os::TryLockMutex(mutex(m)) ? 0 : EBUSY; }
+
+int nngame_usleep(useconds_t us) { return usleep(us); }
+
 }  // extern "C"
