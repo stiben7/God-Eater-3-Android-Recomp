@@ -5405,7 +5405,9 @@ bool Executor::ensure_render_pass(bool full_area) {
         if (it == pending_clears_.end()) continue;
         const TextureViewDesc& v = *target_views[i];
         const int level = (v.flags & kViewLevels) ? v.base_level : 0;
-        bool usable = memcmp(&it->view, &v, sizeof v) == 0 && static_cast<uint32_t>(std::max(t->desc.width >> level, 1)) == width &&
+        // (An attachment is one layer: a clear of several layers can't ride on it as loadOp CLEAR.)
+        bool usable = memcmp(&it->view, &v, sizeof v) == 0 && view_layer_count(*t, v) <= 1 &&
+                      static_cast<uint32_t>(std::max(t->desc.width >> level, 1)) == width &&
                       static_cast<uint32_t>(std::max(t->desc.height >> level, 1)) == height;
         for (uint32_t j = 0; j < n; j++) usable = usable && (j == i || targets[j] != t);  // dos veces en el pase: aparte
         if (!usable) {
@@ -5641,6 +5643,22 @@ VkExtent2D Executor::target_extent() const {
     return {width, height};
 }
 
+// How many array layers a render-target view covers, the way view() builds it (without the one-layer limit attachments
+// get there): a 2D/1D/rectangle view is one layer, a cube six, an array view the layers from its base to its end (or the
+// count it names). NVN clears every layer of the view it is bound to, and God Eater 3 clears all three of its shadow
+// cascades with one clear through a view of the whole array before drawing into each layer with views of one.
+static uint32_t view_layer_count(const Texture& t, const TextureViewDesc& v) {
+    const int target = (v.flags & kViewTarget) ? v.target : t.desc.target;
+    if (target == kTarget1D || target == kTarget2D || target == kTarget2DMultisample || target == kTargetRectangle ||
+        target == kTarget3D)
+        return 1;
+    if (target == kTargetCube) return std::min<uint32_t>(6, std::max<uint32_t>(t.layers, 1));
+    const uint32_t base = (v.flags & kViewLayers) ? static_cast<uint32_t>(std::max<int>(v.base_layer, 0)) : 0u;
+    if (base >= t.layers) return 1;
+    uint32_t count = (v.flags & kViewLayers) && v.layers > 0 ? static_cast<uint32_t>(v.layers) : t.layers - base;
+    return std::max<uint32_t>(1, std::min<uint32_t>(count, t.layers - base));
+}
+
 // Un borrado de todo el adjunto antes de que empiece el pase de estos targets: se apunta para el siguiente pase que lo
 // use (loadOp CLEAR) en vez de abrir uno solo para borrar. false si no se puede (se borra como siempre): textura sin
 // imagen, multisample, vista con otro formato o de otro tipo, el adjunto no es todo el framebuffer, scissor parcial, o
@@ -5714,7 +5732,8 @@ void Executor::flush_clears(const Texture* only) {
         }
         const TextureViewDesc& v = p.view;
         const VkImageSubresourceRange range{p.aspects, (v.flags & kViewLevels) ? static_cast<uint32_t>(v.base_level) : 0u, 1,
-                                            (v.flags & kViewLayers) ? static_cast<uint32_t>(v.base_layer) : 0u, 1};
+                                            (v.flags & kViewLayers) ? static_cast<uint32_t>(v.base_layer) : 0u,
+                                            view_layer_count(*p.texture, v)};
         note_gpu_work();
         if (frame_ == trace_frame_)
             NVN_LOG("F borrado diferido hecho aparte: capa %u nivel %u aspecto 0x%x\n", range.baseArrayLayer, range.baseMipLevel,
@@ -5790,6 +5809,16 @@ void Executor::clear_depth_stencil(const cmd::ClearDepthStencil& c) {
                 static_cast<unsigned>(aspect), static_cast<unsigned>(t->aspect), t->layers,
                 deferred ? "diferido" : deferrable ? "inmediato (no se pudo diferir)" : "inmediato");
     if (deferred) return;
+    if (view_layer_count(*t, st_.rt.depth_view) > 1) {
+        // A clear of several layers can't be done inside a pass (an attachment is one layer): do it now on the image.
+        split_why_ = "borrado de varias capas";
+        end_render_pass();
+        touch_targets();
+        st_.rt_dirty = true;
+        pending_clears_.push_back({t, st_.rt.depth_view, aspect & t->aspect, value});
+        flush_clears(t);
+        return;
+    }
     if (!ensure_render_pass() || !t->image) return;
     if (!rp_area_full_) {  // como en clear_color
         split_why_ = "borrado en un pase con área recortada";
